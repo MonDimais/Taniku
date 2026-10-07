@@ -91,6 +91,23 @@ class OrderController extends Controller
             $query->where('id_buyer', $user->id_user);
         }
         $orders = $query->orderBy('tanggal_order', 'desc')->get();
+        
+        // Get all items for these orders in a single query
+        $orderIds = $orders->pluck('id_order')->toArray();
+        $allItems = DB::table('order_items')
+            ->join('products', 'order_items.id_product', '=', 'products.id_product')
+            ->whereIn('order_items.id_order', $orderIds)
+            ->select('order_items.*', 'products.nama_produk', 'products.satuan', 'products.foto')
+            ->get();
+        
+        // Group items by order_id
+        $itemsByOrder = $allItems->groupBy('id_order');
+        
+        // Attach items to each order
+        foreach ($orders as $order) {
+            $order->items = $itemsByOrder->get($order->id_order, collect());
+        }
+        
         return response()->json($orders);
     }
 
@@ -217,23 +234,17 @@ class OrderController extends Controller
             return response()->json(['error' => 'Seller tidak dapat mengubah status ini'], 403);
         }
         
-        // Validate buyer can only confirm or dispute
+        // Validate buyer can only confirm receipt
         if ($user->id_role == 3 && $order->id_buyer == $user->id_user) {
             if ($newStatus == 'confirmed' && $order->status_order == 'shipped') {
                 DB::table('orders')->where('id_order', $id)->update([
                     'status_order' => 'confirmed',
                 ]);
                 $this->sendNotif($order->id_seller, 'order_confirmed', "Buyer mengonfirmasi menerima barang untuk Order #{$id}.", $id);
-                $this->sendNotif($user->id_user, 'awaiting_release', "Order #{$id} menunggu admin untuk persetujuan & pencairan dana.", $id);
+                $this->sendNotif($user->id_user, 'awaiting_release', "Order #{$id} menunggu admin untuk persetujuan & pencairan dana. Anda bisa ajukan dispute jika ada masalah.", $id);
                 return response()->json(['success' => true, 'status' => 'confirmed']);
             }
-            if ($newStatus == 'disputed' && $order->status_order == 'shipped') {
-                DB::table('orders')->where('id_order', $id)->update([
-                    'status_order' => 'disputed',
-                ]);
-                return response()->json(['success' => true, 'status' => 'disputed']);
-            }
-            return response()->json(['error' => 'Buyer hanya dapat confirm atau dispute'], 403);
+            return response()->json(['error' => 'Buyer hanya dapat konfirmasi terima barang dari order shipped. Untuk dispute, gunakan tombol Ajukan Dispute.'], 403);
         }
         
         // Admin can override any status

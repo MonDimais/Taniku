@@ -41,6 +41,7 @@ Route::put('/products/{id}', [ProductController::class, 'update']);
 Route::delete('/products/{id}', [ProductController::class, 'destroy']);
 Route::post('/products/{id}/approve', [ProductController::class, 'approve']);
 Route::post('/products/{id}/review', [ProductController::class, 'review']);
+Route::post('/products/{id}/toggle', [ProductController::class, 'toggleStatus']);
 
 // Product documents (file upload)
 Route::get('/uploads/{path?}', [ProductController::class, 'serveDocument'])->where('path', '.*');
@@ -65,6 +66,7 @@ Route::get('/disputes', [DisputeController::class, 'index']);
 Route::post('/disputes', [DisputeController::class, 'store']);
 Route::get('/disputes/{id}/messages', [DisputeController::class, 'getMessages']);
 Route::post('/disputes/{id}/messages', [DisputeController::class, 'send']);
+Route::delete('/disputes/{id}/messages/{message}', [DisputeController::class, 'deleteMessage']);
 Route::post('/disputes/{id}/resolve', [DisputeController::class, 'resolve']);
 
 // Reviews
@@ -75,6 +77,7 @@ Route::post('/reviews', [ReviewController::class, 'store']);
 Route::get('/messages/conversations', [MessageController::class, 'conversations']);
 Route::get('/messages/{conversation_id}', [MessageController::class, 'getMessages']);
 Route::post('/messages', [MessageController::class, 'send']);
+Route::delete('/messages/{message_id}', [MessageController::class, 'deleteMessage']);
 Route::post('/messages/negotiation', [MessageController::class, 'sendNegotiation']);
 Route::post('/messages/negotiation/accept', [MessageController::class, 'acceptNego']);
 Route::post('/messages/negotiation/reject', [MessageController::class, 'rejectNego']);

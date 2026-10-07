@@ -3,10 +3,10 @@ const API = '';
 let currentUser = null;
 let cart = [];
 let currentChatUser = null;
+let chatMsgsCache = [];
 let currentCategory = '';
 let currentSort = 'newest';
-
-// ===== PRODUCT IMAGES =====
+let currentLocation = '';
 const PRODUCT_IMAGES = {
     1: 'https://images.unsplash.com/photo-1583119022894-919a68a3d0e3?w=400',
     2: 'https://images.unsplash.com/photo-1619663300408-fc31f673d704?w=400',
@@ -28,6 +28,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     hideLoading();
     await checkAuth();
     loadCategories();
+    loadLocations();
     loadFeaturedProducts();
     startNotifPolling();
     initRevealObserver();
@@ -60,7 +61,24 @@ async function api(path, opts = {}) {
             headers: { 'Content-Type': 'application/json' },
             ...opts
         });
-        return await res.json();
+        
+        // Try to parse as JSON first
+        let data;
+        try {
+            data = await res.json();
+        } catch (jsonError) {
+            // If JSON parsing fails, try to get text content
+            const text = await res.text();
+            // Check if it's an HTML error page
+            if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
+                console.error('API returned HTML error page for', path);
+                return { success: false, error: 'Server error (HTML response)', status: res.status };
+            }
+            // Otherwise return the text as error message
+            return { success: false, error: text || 'Invalid response', status: res.status };
+        }
+        
+        return data;
     } catch (e) {
         console.error('API error:', e);
         return { success: false, error: 'Network error' };
@@ -226,7 +244,6 @@ async function handleLogout() {
     await api('/api/auth/logout', { method: 'POST' });
     currentUser = null;
     updateUIForUser();
-    closeModal('logoutModal');
     navigate('home');
     showToast('Anda telah keluar', 'success');
 }
@@ -267,7 +284,7 @@ document.addEventListener('click', function(e) {
 });
 
 function showLogoutConfirm() {
-    document.getElementById('logoutModal').style.display = 'flex';
+    showConfirm('Yakin keluar?', 'Anda akan keluar dari sesi ini.', () => handleLogout(), 'Keluar', 'Batal');
 }
 
 // ===== AUTH MODAL =====
@@ -455,6 +472,41 @@ function filterByCategory(id) {
     loadProducts();
 }
 
+function filterByLocation(loc) {
+    currentLocation = loc || '';
+    // Update active card
+    document.querySelectorAll('.loc-filter-card').forEach(c => c.classList.remove('active'));
+    const target = document.querySelector('.loc-filter-card[data-loc="' + loc + '"]');
+    if (target) target.classList.add('active');
+    // Ensure we're on the products page
+    if (!document.getElementById('page-products').classList.contains('active')) {
+        navigate('products');
+    }
+    loadProducts();
+}
+
+async function loadLocations() {
+    // Fetch all active products to get unique seller locations
+    const products = await api('/api/products?status=active');
+    const locations = [...new Set(products.map(p => p.seller_alamat).filter(Boolean))]
+        .map(alamat => {
+            // Extract city/region - take the part after the last comma
+            const parts = alamat.split(',');
+            return parts.length > 1 ? parts[parts.length - 1].trim() : alamat.trim();
+        })
+        .filter(l => l && l.length > 0);
+    
+    const uniqueLocations = [...new Set(locations)].sort();
+    const lf = document.getElementById('locationFilter');
+    if (lf) {
+        let html = '<div class="loc-filter-card active" data-loc="" onclick="filterByLocation(\'\')">Semua</div>';
+        uniqueLocations.forEach(loc => {
+            html += '<div class="loc-filter-card" data-loc="' + loc.replace(/"/g, '&quot;') + '" onclick="filterByLocation(\'' + loc.replace(/'/g, "\\'") + '\')">' + loc + '</div>';
+        });
+        lf.innerHTML = html;
+    }
+}
+
 function setSort(val) {
     currentSort = val;
     document.querySelectorAll('#sortFilter .filter-pill').forEach(p => p.classList.remove('active'));
@@ -481,10 +533,11 @@ async function loadProducts() {
     const sort = currentSort;
     let url = '/api/products?status=active';
     if (currentCategory) url += `&category=${currentCategory}`;
+    if (currentLocation) url += `&location=${encodeURIComponent(currentLocation)}`;
     let products = await api(url);
 
     if (sort === 'price-low') products.sort((a,b) => (a.harga||0)-(b.harga||0));
-    else if (sort === 'price-high') products.sort((a,b) => (b.harga||0)-(a.harga||0));
+    else if (sort === 'price-high') products.sort((b.harga||0)-(a.harga||0));
 
     grid.innerHTML = products.map(p => productCardHTML(p)).join('');
     observeReveal();
@@ -509,8 +562,9 @@ function productCardHTML(p) {
     const img = p.foto || productImg(p.id_product);
     const statusClass = `status-${p.status || 'pending'}`;
     const statusText = p.status === 'active' ? 'Grade ' + (p.grade || 'A') : p.status === 'pending' ? 'Tinjau' : p.status;
+    const location = p.seller_alamat ? p.seller_alamat.split(',').pop().trim() : '';
     return `
-    <div class="product-card reveal" onclick="showProduct(${p.id_product})">
+    <div class="product-card reveal" data-location="${location}" onclick="showProduct(${p.id_product})">
         <div class="product-img">
             <img src="${img}" alt="${p.nama_produk}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
             <span class="product-fallback-emoji" style="display:none;font-size:48px">${'🥬🧅🍅🌿🫚🥒🌱🌾'[p.id_product % 8]}</span>
@@ -519,6 +573,7 @@ function productCardHTML(p) {
         <div class="product-body">
             <div class="product-name">${p.nama_produk}</div>
             <div class="product-seller"><i class="fas fa-store"></i> ${p.seller_nama || 'Petani'}</div>
+            ${location ? `<div class="product-location"><i class="fas fa-location-dot"></i> ${location}</div>` : ''}
             <div class="product-price">Rp${(p.harga||0).toLocaleString()} <small>/${p.satuan||'pcs'}</small></div>
             <div class="product-footer">
                 <span class="product-stock"><i class="fas fa-box"></i> ${p.stok} ${p.satuan||'pcs'}</span>
@@ -536,6 +591,7 @@ async function showProduct(id) {
     const p = await api(`/api/products/${id}`);
     if (!p || p.error) { showToast('Produk tidak ditemukan', 'error'); return; }
     const img = p.foto || productImg(p.id_product);
+    const location = p.seller_alamat || '';
     document.getElementById('productDetailContent').innerHTML = `
         <div class="product-detail-img">
             <img src="${img}" alt="${p.nama_produk}" style="width:100%;height:100%;object-fit:cover;border-radius:12px" onerror="this.style.display='none'">
@@ -546,6 +602,7 @@ async function showProduct(id) {
             <p class="product-detail-desc">${p.deskripsi||'Tidak ada deskripsi'}</p>
             <div class="product-detail-meta">
                 <span><i class="fas fa-store"></i> ${p.seller_nama||'Petani'} (${p.nama_usaha||''})</span>
+                ${location ? `<span><i class="fas fa-location-dot"></i> ${location}</span>` : ''}
                 <span><i class="fas fa-box"></i> Stok: ${p.stok} ${p.satuan||'pcs'}</span>
                 ${p.seller_rating ? `<span><i class="fas fa-star" style="color:var(--yellow-500)"></i> ${parseFloat(p.seller_rating).toFixed(1)}</span>` : ''}
                 ${p.grade ? `<span><i class="fas fa-award"></i> Grade ${p.grade}</span>` : ''}
@@ -791,15 +848,43 @@ function showDashboardTab(tab) {
     if (role === 'seller') {
         if (tab === 'products') loadSellerProducts(el);
         else if (tab === 'orders') loadSellerOrders(el);
-        else if (tab === 'messages') el.innerHTML = '<p style="color:var(--slate-500)">Gunakan tombol chat di atas untuk mengirim pesan</p>';
+        else if (tab === 'messages') loadDashboardMessages(el);
         else if (tab === 'settings') loadSellerSettings(el);
     } else if (role === 'buyer') {
         if (tab === 'products' || tab === 'orders') loadBuyerOrders(el);
-        else if (tab === 'messages') el.innerHTML = '<p style="color:var(--slate-500)">Gunakan tombol chat di atas untuk mengirim pesan</p>';
+        else if (tab === 'messages') loadDashboardMessages(el);
     } else {
         // Admin: dashboard is for seller/buyer only — fall back to orders list.
         if (tab === 'overview') showAdminTab('overview');
     }
+}
+
+/**
+ * Render the dashboard messages tab as a real conversation list (same data the
+ * floating chat panel uses). Clicking a row opens that conversation in the
+ * floating chat panel via showChatWith() so the user has one source of truth.
+ */
+async function loadDashboardMessages(el) {
+    if (!currentUser) { el.innerHTML = '<p style="color:var(--slate-500)">Login untuk melihat pesan.</p>'; return; }
+    el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--slate-400)">Memuat pesan...</div>';
+    const convos = await api('/api/messages/conversations');
+    const rows = (Array.isArray(convos) ? convos : []).map(c => {
+        const name = (c.contact_nama || 'Tanpa nama').replace(/</g, '&lt;');
+        const preview = (c.pesan || '').replace(/</g, '&lt;');
+        const cid = Number(c.contact_id || 0);
+        return `<div class="chat-convo" onclick="showChatWith(${cid})" style="padding:12px 8px;border-bottom:1px solid var(--slate-100)">
+            <div class="chat-convo-avatar">${name.charAt(0)}</div>
+            <div class="chat-convo-info">
+                <div class="chat-convo-name">${name}</div>
+                <div class="chat-convo-preview">${preview}</div>
+            </div>
+        </div>`;
+    }).join('');
+    el.innerHTML = `
+        <h3>Pesan</h3>
+        <p style="color:var(--slate-500);margin:8px 0 16px">Klik salah satu percakapan untuk membuka di panel chat.</p>
+        ${rows || '<p style="padding:40px;text-align:center;color:var(--slate-400)">Belum ada percakapan.</p>'}
+    `;
 }
 
 /**
@@ -851,23 +936,72 @@ async function loadSellerStats(el) {
 async function loadSellerProducts(el) {
     const stats = await loadSellerStats(el);
     const products = await api(`/api/products?seller=${currentUser.id_user}`);
+    const gradeColor = { A: 'var(--green-600)', B: 'var(--blue-500)', C: 'var(--yellow-500)' };
+    const statusLabel = { active: 'Aktif', pending: 'Menunggu', rejected: 'Ditolak', draft: 'Draf' };
     el.innerHTML = stats + `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <h3>Produk Saya</h3>
+        <h3>Produk Saya (${products.length})</h3>
         <button class="btn btn-primary btn-sm" onclick="showProductForm()"><i class="fas fa-plus"></i> Tambah</button>
     </div>
-    <div class="data-list">
-        ${products.map(p => `
-        <div class="data-list-item">
-            <div><div class="item-main">${p.nama_produk}</div><div class="item-sub">Grade ${p.grade||'-'}</div></div>
-            <div>Rp${(p.harga||0).toLocaleString()}/${p.satuan||'pcs'}</div>
-            <div>${p.stok} ${p.satuan||'pcs'}</div>
-            <div style="display:flex;gap:6px;align-items:center">
-                <span class="status-badge status-${p.status}">${p.status}</span>
-                <button class="btn-icon" onclick="showProductForm(${p.id_product})"><i class="fas fa-edit"></i></button>
-            </div>
-        </div>`).join('') || '<p style="padding:20px;text-align:center;color:var(--slate-400)">Belum ada produk</p>'}
+    <div class="my-prod-grid">
+        ${products.map(p => {
+            const low = (p.stok||0) < 10;
+            const gc = gradeColor[p.grade] || 'var(--slate-500)';
+            const foto = p.foto ? API + p.foto : '';
+            return `
+            <div class="my-card">
+                <div class="my-card-img">
+                    ${foto ? `<img src="${foto}" onerror="this.outerHTML='<i class=\\'fas fa-image\\'></i>'">` : `<i class="fas fa-image"></i>`}
+                    <span class="my-card-status ${p.status}">${statusLabel[p.status]||p.status}</span>
+                </div>
+                <div class="my-card-body">
+                    <div class="my-card-name">${p.nama_produk||'-'}</div>
+                    <div class="my-card-row">
+                        <span class="my-card-price">Rp${(p.harga||0).toLocaleString()}<small> /${p.satuan||'pcs'}</small></span>
+                        <span class="my-card-grade" style="background:${gc}20;color:${gc}">Grade ${p.grade||'-'}</span>
+                    </div>
+                    <div class="my-card-row">
+                        <span>Stok:</span>
+                        <span class="my-card-stock ${low?'low':''}">${(p.stok||0).toLocaleString()} ${p.satuan||'pcs'}</span>
+                    </div>
+                </div>
+                <div class="my-card-actions">
+                    <button onclick="showProductForm(${p.id_product})" title="Edit"><i class="fas fa-edit"></i></button>
+                    <button class="act-toggle" onclick="toggleProductStatus(${p.id_product},'${p.status}')" title="${p.status==='active'?'Nonaktifkan':'Aktifkan'}"><i class="fas ${p.status==='active'?'fa-pause':'fa-play'}"></i></button>
+                    <button class="act-delete" onclick="deleteProduct(${p.id_product})" title="Hapus"><i class="fas fa-trash"></i></button>
+                </div>
+            </div>`;
+        }).join('') || '<p style="padding:40px;text-align:center;color:var(--slate-400);grid-column:1/-1">Belum ada produk</p>'}
     </div>`;
+}
+
+async function toggleProductStatus(id, current) {
+    if (current === 'pending' || current === 'rejected') {
+        showToast(current === 'pending' ? 'Produk masih menunggu verifikasi admin. Tunggu approval dulu.' : 'Produk ditolak. Edit produk untuk resubmit.', 'error');
+        return;
+    }
+    const next = (current === 'active') ? 'draft' : 'active';
+    const res = await api(`/api/products/${id}/toggle`, { method: 'POST', body: JSON.stringify({}) });
+    if (res && res.success) {
+        showToast(next === 'active' ? 'Produk diaktifkan' : 'Produk dinonaktifkan', 'success');
+        showDashboardTab('products');
+    } else {
+        showToast((res && res.error) || 'Gagal', 'error');
+    }
+}
+
+async function _doDeleteProduct(id) {
+    const res = await api(`/api/products/${id}`, { method: 'DELETE' });
+    if (res && res.success) {
+        showToast('Produk dihapus', 'success');
+        showDashboardTab('products');
+    } else {
+        showToast((res && res.error) || 'Gagal hapus', 'error');
+    }
+}
+
+async function deleteProduct(id) {
+    showConfirm('Yakin hapus produk?', 'Tindakan ini tidak bisa dibatalkan.', () => _doDeleteProduct(id), 'Hapus', 'Batal');
 }
 
 async function loadSellerOrders(el) {
@@ -880,29 +1014,29 @@ async function loadSellerOrders(el) {
     const completedOrders = sellerOrders.filter(o => !['paid', 'shipped'].includes(o.status_order));
     
     el.innerHTML = `
-        <div class="order-summary-grid">
-            <div class="summary-card">
+        <div class="order-summary-grid" style="display:flex;flex-direction:row;flex-wrap:nowrap;gap:12px;overflow-x:auto;padding-bottom:8px">
+            <div class="summary-card" style="flex:1 1 0;min-width:140px">
                 <div class="summary-icon action"><i class="fas fa-box"></i></div>
                 <div class="summary-info">
                     <div class="summary-count">${actionOrders.filter(o => o.status_order === 'paid').length}</div>
                     <div class="summary-label">Perlu Dikirim</div>
                 </div>
             </div>
-            <div class="summary-card">
+            <div class="summary-card" style="flex:1 1 0;min-width:140px">
                 <div class="summary-icon shipping"><i class="fas fa-truck"></i></div>
                 <div class="summary-info">
                     <div class="summary-count">${actionOrders.filter(o => o.status_order === 'shipped').length}</div>
                     <div class="summary-label">Sedang Dikirim</div>
                 </div>
             </div>
-            <div class="summary-card">
+            <div class="summary-card" style="flex:1 1 0;min-width:140px">
                 <div class="summary-icon completed"><i class="fas fa-check-circle"></i></div>
                 <div class="summary-info">
                     <div class="summary-count">${completedOrders.length}</div>
                     <div class="summary-label">Selesai</div>
                 </div>
             </div>
-            <div class="summary-card">
+            <div class="summary-card" style="flex:1 1 0;min-width:140px">
                 <div class="summary-icon total"><i class="fas fa-shopping-bag"></i></div>
                 <div class="summary-info">
                     <div class="summary-count">${sellerOrders.length}</div>
@@ -1157,20 +1291,38 @@ async function confirmShip(orderId) {
 async function loadBuyerOrders(el) {
     const orders = await api('/api/orders');
     el.innerHTML = `<h3 style="margin-bottom:16px">Order Saya</h3>
-    <div class="data-list">
+    <div class="buyer-order-grid">
         ${orders.map(o => `
-        <div class="data-list-item">
-            <div><div class="item-main">Order #${o.id_order}</div><div class="item-sub">${o.tanggal_order?.slice(0,10)||''}</div></div>
-            <div>Rp${(o.total_amount||0).toLocaleString()}</div>
-            <div><span class="status-badge status-${o.status_order}">${o.status_order}</span></div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-                <button class="btn-icon" onclick="showOrderDetail(${o.id_order})"><i class="fas fa-eye"></i></button>
-                ${o.status_order==='pending' ? `<button class="btn btn-sm btn-primary" onclick="payOrder(${o.id_order})">Bayar</button>` : ''}
-                ${o.status_order==='shipped' ? `<button class="btn btn-sm btn-success" onclick="updateOrderStatus(${o.id_order},'confirmed')"><i class="fas fa-check"></i> Received</button>` : ''}
-                ${o.status_order==='shipped' ? `<button class="btn btn-sm btn-danger" onclick="openDispute(${o.id_order})"><i class="fas fa-flag"></i> Dispute</button>` : ''}
-                ${o.status_order==='disputed' ? `<button class="btn btn-sm btn-primary" onclick="openDisputeChat(${o.id_order})"><i class="fas fa-comments"></i> Lihat Dispute</button>` : ''}
+        <div class="buyer-order-card" onclick="showOrderDetail(${o.id_order})">
+            <div class="buyer-order-head">
+                <span class="order-id">Order #${o.id_order}</span>
+                <span class="order-date">${o.tanggal_order?.slice(0,10)||''}</span>
             </div>
-        </div>`).join('') || '<p style="padding:20px;text-align:center;color:var(--slate-400)">Belum ada order</p>'}
+            <div class="buyer-order-items">
+                ${(o.items||[]).map(i => `
+                <div class="buyer-order-item">
+                    <img src="${i.foto||'https://via.placeholder.com/60'}" alt="${i.nama_produk}" class="item-img" onerror="this.src='https://via.placeholder.com/60?text=No+Img'">
+                    <div class="item-info">
+                        <div class="item-name">${i.nama_produk}</div>
+                        <div class="item-meta">
+                            <span class="item-qty">${i.quantity||1} ${i.satuan||'pcs'}</span>
+                            <span class="item-price">Rp${((i.subtotal||i.harga||0)).toLocaleString()}</span>
+                        </div>
+                    </div>
+                </div>`).join('') || '<div class="buyer-order-empty" style="padding:20px;text-align:center;color:var(--slate-400);font-size:13px">Tidak ada item</div>'}
+            </div>
+            <div class="buyer-order-total">
+                <span class="total-label">Total</span>
+                <span class="total-amount">Rp${(o.total_amount||0).toLocaleString()}</span>
+            </div>
+            <div class="buyer-order-actions">
+                ${o.status_order==='pending' ? `<button class="btn btn-action-primary" onclick="event.stopPropagation();payOrder(${o.id_order})"><i class="fas fa-credit-card"></i> Bayar</button>` : ''}
+                ${o.tracking_number && o.status_order==='shipped' ? `<button class="btn btn-action-info" title="Tracking" onclick="event.stopPropagation();showTracking(${o.id_order})"><i class="fas fa-truck"></i></button>` : ''}
+                ${o.status_order==='shipped' ? `<button class="btn btn-action-success" onclick="event.stopPropagation();updateOrderStatus(${o.id_order},'confirmed')"><i class="fas fa-check"></i> Sudah Diterima</button>` : ''}
+                ${o.status_order==='confirmed' ? `<button class="btn btn-action-danger" onclick="event.stopPropagation();openDispute(${o.id_order})"><i class="fas fa-flag"></i> Ajukan Dispute</button>` : ''}
+                ${o.status_order==='disputed' ? `<button class="btn btn-action-warning" onclick="event.stopPropagation();openDisputeChat(${o.id_order})"><i class="fas fa-comments"></i> Lihat Dispute</button>` : ''}
+            </div>
+        </div>`).join('') || '<div class="buyer-order-empty"><i class="fas fa-box"></i><h3>Belum ada order</h3><p>Belanja produk dari seller di Taniku</p></div>'}
     </div>`;
 }
 
@@ -1451,19 +1603,28 @@ async function negoProduct(productId, sellerId) {
 async function showOrderDetail(id) {
     const o = await api(`/api/orders/${id}`);
     if (!o || o.error) { showToast('Order tidak ditemukan', 'error'); return; }
+    // Split alamat and note (format: "alamat - Note: note")
+    let alamat = o.alamat_pengiriman || '-';
+    let note = '';
+    const noteMatch = alamat.match(/^(.*?)\s*-\s*Note:\s*(.*)$/);
+    if (noteMatch) {
+        alamat = noteMatch[1];
+        note = noteMatch[2];
+    }
     document.getElementById('productDetailContent').innerHTML = `
         <h2 style="margin-bottom:12px">Order #${o.id_order}</h2>
         <span class="status-badge status-${o.status_order}">${o.status_order}</span>
         <div style="margin-top:12px">
             <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Tanggal</span><span>${o.tanggal_order}</span></div>
             <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Total</span><span>Rp${(o.total_amount||0).toLocaleString()}</span></div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Alamat</span><span style="text-align:right;max-width:60%">${o.alamat_pengiriman||'-'}</span></div>
+            <div style="margin-bottom:8px"><span style="display:block;color:var(--slate-500);font-size:12px;margin-bottom:4px">Alamat Pengiriman</span><span style="color:var(--slate-800);white-space:pre-wrap">${alamat}</span></div>
+            ${note ? `<div style="margin-bottom:8px"><span style="display:block;color:var(--slate-500);font-size:12px;margin-bottom:4px">Note</span><span style="color:var(--slate-800);white-space:pre-wrap;background:var(--yellow-50);padding:8px 12px;border-radius:8px;border-left:3px solid var(--yellow-500);display:block">${note}</span></div>` : ''}
             <div style="display:flex;justify-content:space-between;margin-bottom:16px"><span>Escrow</span><span>${o.payment ? o.payment.status_escrow : '-'}</span></div>
         </div>
         <h4 style="margin-bottom:8px">Item Order</h4>
         ${o.items?.map((i,idx) => `
         <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--slate-100)">
-            <span><img src="${productImg(i.id_product)}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;display:inline-block;vertical-align:middle;margin-right:6px" onerror="this.style.display='none'"> ${i.nama_produk} x${i.quantity}</span>
+            <span><img src="${productImg(i.id_product)}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;display:inline-block;vertical-align:middle;margin-right:6px" onerror="this.style.display='none'"> ${i.nama_produk} <span style="color:var(--slate-500);font-size:12px">${i.quantity} ${i.satuan||'pcs'}</span></span>
             <span>Rp${(i.subtotal||0).toLocaleString()}</span>
         </div>`).join('') || '<p style="color:var(--slate-400)">Tidak ada item</p>'}
     `;
@@ -1486,8 +1647,7 @@ async function adminSetStatus(orderId, status) {
 
 // Admin releases held escrow to the seller after the buyer confirmed receipt.
 // This is the money-transfer step that accrues the seller's pendapatan.
-async function adminReleaseEscrow(orderId) {
-    if (!confirm('Cairkan dana escrow untuk Order #' + orderId + ' ke seller? (platform fee 5%)')) return;
+async function _doReleaseEscrow(orderId) {
     const res = await api(`/api/orders/${orderId}/release`, { method: 'POST' });
     if (res && res.success) {
         showToast(`Dana Order #${orderId} dicairkan ke seller!`, 'success');
@@ -1497,6 +1657,10 @@ async function adminReleaseEscrow(orderId) {
     showAdminTab('orders');
 }
 
+async function adminReleaseEscrow(orderId) {
+    showConfirm('Cairkan Dana Escrow', `Cairkan dana escrow untuk Order #${orderId} ke seller? (platform fee 5%)`, () => _doReleaseEscrow(orderId), 'Cairkan', 'Batal');
+}
+
 async function adminApproveOrder(orderId) {
     await api(`/api/orders/${orderId}/status`, { method: 'PUT', body: JSON.stringify({ status: 'paid' }) });
     showToast('Order #' + orderId + ' diapprove!', 'success');
@@ -1504,10 +1668,12 @@ async function adminApproveOrder(orderId) {
 }
 
 async function adminRejectOrder(orderId) {
-    if (!confirm('Tolak order #' + orderId + '?')) return;
-    await api(`/api/orders/${orderId}/status`, { method: 'PUT', body: JSON.stringify({ status: 'cancelled' }) });
-    showToast('Order #' + orderId + ' ditolak.', 'info');
-    showAdminTab('orders');
+    showConfirm('Tolak Order', `Tolak order #${orderId}?`, () => {
+        api(`/api/orders/${orderId}/status`, { method: 'PUT', body: JSON.stringify({ status: 'cancelled' }) }).then(() => {
+            showToast('Order #' + orderId + ' ditolak.', 'info');
+            showAdminTab('orders');
+        });
+    }, 'Tolak', 'Batal');
 }
 
 async function payOrder(orderId) {
@@ -1517,15 +1683,21 @@ async function payOrder(orderId) {
 }
 
 async function openDispute(orderId) {
-    const alasan = prompt('Alasan dispute:');
-    if (!alasan) return;
-    const deskripsi = prompt('Deskripsi lengkap (opsional):') || '';
-    await api('/api/disputes', {
-        method: 'POST',
-        body: JSON.stringify({ id_order: orderId, alasan, deskripsi })
-    });
-    showToast('Dispute dibuka!', 'success');
-    loadBuyerOrders(document.getElementById('dashboardContent'));
+    showPrompt('Buka Dispute', `Alasan dispute untuk Order #${orderId}:`, (value) => {
+        const alasan = value.input.trim();
+        const deskripsi = value.textarea.trim();
+        if (!alasan) {
+            showToast('Alasan wajib diisi', 'error');
+            return;
+        }
+        api('/api/disputes', {
+            method: 'POST',
+            body: JSON.stringify({ id_order: orderId, alasan, deskripsi })
+        }).then(() => {
+            showToast('Dispute dibuka!', 'success');
+            loadBuyerOrders(document.getElementById('dashboardContent'));
+        });
+    }, '', 'both');
 }
 
 let currentDisputeId = null;
@@ -1558,42 +1730,325 @@ async function openDisputeChat(orderId) {
     
     modal.style.display = 'flex';
 }
-
 async function loadDisputeMessages() {
     if (!currentDisputeId) return;
     const msgs = await api(`/api/disputes/${currentDisputeId}/messages`);
     const chatContent = document.getElementById('disputeChatContent');
+    // Cache msgs for files modal lookup
+    disputeMsgsCache = msgs || [];
     
     if (!msgs || msgs.length === 0) {
-        chatContent.innerHTML = '<p style="text-align:center;color:var(--slate-400);padding:20px">Belum ada pesan. Mulai obrolan di bawah.</p>';
-    } else {
-        chatContent.innerHTML = msgs.map(m => `
-            <div style="margin-bottom:12px;${m.sender_id === currentUser.id_user ? 'text-align:right' : 'text-align:left'}">
-                <div style="font-size:11px;color:var(--slate-400)">${m.sender_nama || 'User'} • ${m.sent_at?.slice(0,16).replace('T', ' ')}</div>
-                <div style="background:${m.sender_id === currentUser.id_user ? 'var(--green-100)' : 'var(--white)'};padding:10px 14px;border-radius:12px;display:inline-block;max-width:80%">${m.pesan}</div>
-            </div>
-        `).join('');
-        // Scroll to bottom
-        chatContent.scrollTop = chatContent.scrollHeight;
+        chatContent.innerHTML = '<p style="text-align:center;color:var(--slate-400);padding:20px;font-size:13px">Belum ada pesan. Mulai obrolan di bawah.</p>';
+        return;
     }
+    
+    chatContent.innerHTML = msgs.map(m => {
+        const isMine = m.sender_id === currentUser.id_user;
+        const isAdmin = currentUser.id_role === 1;
+        const canDelete = isMine || isAdmin;
+        const senderName = m.sender_nama || 'User';
+        const time = m.sent_at ? m.sent_at.slice(5,16).replace('T',' ') : '';
+        
+        // Collect attachments: prefer new array, fall back to legacy single column
+        let atts = [];
+        if (Array.isArray(m.attachments) && m.attachments.length > 0) {
+            atts = m.attachments;
+        } else if (m.attachment) {
+            const p = m.attachment;
+            atts = [{ path: p, filename: p.split('/').pop(), mime_type: '', size: null }];
+        }
+        
+        let attHtml = '';
+        if (atts.length > 0) {
+            const images = atts.filter(a => isImageType(a));
+            const maxThumbs = 3;
+            let inlineHtml = '';
+            if (images.length > 0) {
+                inlineHtml = images.slice(0, maxThumbs).map(a => {
+                    const url = fullUrl(a.path);
+                    return `<img class="chat-att-thumb" src="${escapeHtml(url)}" alt="${escapeHtml(a.filename||'')}" onclick="openDisputeFilesModal(${m.id_message})" onerror="this.style.display='none'">`;
+                }).join('');
+                if (images.length > maxThumbs) {
+                    inlineHtml += `<span class="chat-att-more">+${images.length - maxThumbs}</span>`;
+                }
+            }
+            if (atts.length > 0) {
+                const label = images.length > 0 ? `+${atts.length} files` : `${atts.length} files`;
+                inlineHtml += `<span class="chat-att-badge" onclick="openDisputeFilesModal(${m.id_message})"><i class="fas fa-paperclip"></i> ${escapeHtml(label)}</span>`;
+            }
+            if (inlineHtml) {
+                attHtml = `<div class="chat-att-row">${inlineHtml}</div>`;
+            }
+        }
+        
+        const delBtn = canDelete ? `<i class="fas fa-trash-alt dispute-msg-del" title="Hapus pesan" onclick="deleteDisputeMessage(${m.id_message})"></i>` : '';
+        
+        return `
+        <div class="dispute-msg ${isMine ? 'sent' : 'received'}" data-msg-id="${m.id_message}">
+            <div class="dispute-msg-meta">
+                <span>${escapeHtml(senderName)}${isMine ? ' (Anda)' : ''} • ${time}</span>
+                ${delBtn}
+            </div>
+            <div class="dispute-bubble ${isMine ? 'sent' : 'received'}">
+                ${escapeHtml(m.pesan)}
+                ${attHtml}
+            </div>
+        </div>`;
+    }).join('');
+    chatContent.scrollTop = chatContent.scrollHeight;
+}
+
+function fullUrl(p) {
+    if (!p) return '';
+    return p.startsWith('http') ? p : window.location.origin + p;
+}
+function isImageType(a) {
+    const m = (a.mime_type || '').toLowerCase();
+    if (m.startsWith('image/')) return true;
+    return /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(a.path || a.filename || '');
+}
+function isVideoType(a) {
+    const m = (a.mime_type || '').toLowerCase();
+    if (m.startsWith('video/')) return true;
+    return /\.(mp4|mov|webm|mkv|avi)$/i.test(a.path || a.filename || '');
+}
+function isAudioType(a) {
+    const m = (a.mime_type || '').toLowerCase();
+    if (m.startsWith('audio/')) return true;
+    return /\.(mp3|wav|ogg|aac|m4a)$/i.test(a.path || a.filename || '');
+}
+function attIcon(a) {
+    const name = (a.filename || a.path || '').toLowerCase();
+    if (/\.pdf$/.test(name)) return { icon: 'fa-file-pdf', color: 'var(--red-500)' };
+    if (/\.(doc|docx)$/.test(name)) return { icon: 'fa-file-word', color: 'var(--blue-500)' };
+    if (/\.(xls|xlsx|csv)$/.test(name)) return { icon: 'fa-file-excel', color: 'var(--green-600)' };
+    if (/\.(zip|rar|7z|tar|gz)$/.test(name)) return { icon: 'fa-file-archive', color: 'var(--amber-600)' };
+    return { icon: 'fa-file', color: 'var(--slate-500)' };
+}
+function fileAttHtml(a) {
+    const url = fullUrl(a.path);
+    const { icon, color } = attIcon(a);
+    const fname = a.filename || a.path.split('/').pop() || 'File';
+    return `<a href="${escapeHtml(url)}" target="_blank" download class="dispute-att-file">
+        <i class="fas ${icon}" style="color:${color}"></i>
+        <span>${escapeHtml(fname)}</span>
+        <i class="fas fa-download"></i>
+    </a>`;
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ===== DISPUTE FILES MODAL (centered list of attachments for a message) =====
+let disputeFilesMsgId = null;
+let disputeMsgsCache = [];
+
+function openDisputeFilesModal(msgId) {
+    const msg = (disputeMsgsCache || []).find(m => m.id_message === msgId);
+    if (!msg) return;
+    let atts = [];
+    if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
+        atts = msg.attachments;
+    } else if (msg.attachment) {
+        const p = msg.attachment;
+        atts = [{ path: p, filename: p.split('/').pop(), mime_type: '', size: null }];
+    }
+    if (atts.length === 0) return;
+    disputeFilesMsgId = msgId;
+    document.getElementById('disputeFilesModalTitle').textContent = `Files (${atts.length})`;
+    const body = document.getElementById('disputeFilesModalBody');
+    body.innerHTML = atts.map(a => {
+        const url = fullUrl(a.path);
+        const fname = a.filename || a.path.split('/').pop() || 'File';
+        const isImage = isImageType(a);
+        const isVideo = isVideoType(a);
+        const isAudio = isAudioType(a);
+        let preview = '';
+        if (isImage) preview = `<img src="${escapeHtml(url)}" alt="" loading="lazy">`;
+        else if (isVideo) preview = `<video src="${escapeHtml(url)}" controls preload="metadata"></video>`;
+        else if (isAudio) preview = `<audio src="${escapeHtml(url)}" controls style="width:100%"></audio>`;
+        else {
+            const { icon, color } = attIcon(a);
+            preview = `<div class="chat-file-icon"><i class="fas ${icon}" style="color:${color}"></i></div>`;
+        }
+        return `<div class="chat-file-item">
+            <div class="chat-file-preview-box">${preview}</div>
+            <div class="chat-file-info">
+                <div class="chat-file-name" title="${escapeHtml(fname)}">${escapeHtml(fname)}</div>
+                <div class="chat-file-meta">${escapeHtml(formatSize(a.size))}${a.mime_type ? ' • ' + escapeHtml(a.mime_type) : ''}</div>
+            </div>
+            <div class="chat-file-actions">
+                <a href="${escapeHtml(url)}" target="_blank" download class="btn btn-sm btn-outline"><i class="fas fa-download"></i></a>
+            </div>
+        </div>`;
+    }).join('');
+    const footer = document.getElementById('disputeFilesModalFooter');
+    const isMe = currentUser && msg.sender_id === currentUser.id_user;
+    const isAdmin = currentUser && currentUser.id_role === 1;
+    footer.innerHTML = (isMe || isAdmin)
+        ? `<button class="btn btn-danger" onclick="deleteDisputeMessageFromModal()"><i class="fas fa-trash"></i> Hapus Pesan &amp; Files</button>`
+        : '';
+    document.getElementById('disputeFilesModal').style.display = 'flex';
+}
+
+function closeDisputeFilesModal() {
+    document.getElementById('disputeFilesModal').style.display = 'none';
+    disputeFilesMsgId = null;
+}
+
+function deleteDisputeMessageFromModal() {
+    const msgId = disputeFilesMsgId;
+    closeDisputeFilesModal();
+    if (msgId) deleteDisputeMessage(msgId);
+}
+
+async function deleteDisputeMessage(msgId) {
+    if (!confirm('Hapus pesan ini? Semua file terlampir juga akan dihapus.')) return;
+    if (!currentDisputeId) return;
+    const msg = document.querySelector(`[data-msg-id="${msgId}"]`);
+    if (msg) msg.style.opacity = '0.5';
+    try {
+        const res = await api(`/api/disputes/${currentDisputeId}/messages/${msgId}`, { method: 'DELETE' });
+        if (res.success) {
+            showToast('Pesan dihapus', 'success');
+            await loadDisputeMessages();
+        } else {
+            showToast(res.error || 'Gagal menghapus', 'error');
+            await loadDisputeMessages();
+        }
+    } catch(e) {
+        showToast('Gagal menghapus pesan', 'error');
+        await loadDisputeMessages();
+    }
+}
+
+// ===== MULTI-FILE UPLOAD STATE =====
+let disputeAttachmentFiles = []; // array of File
+let disputeAttachmentUrls = {}; // fileKey -> objectURL (for image preview)
+
+function fileKey(f) { return f.name + '|' + f.size + '|' + f.lastModified; }
+
+function onDisputeFileSelect() {
+    const fileInput = document.getElementById('disputeFileInput');
+    const preview = document.getElementById('disputeFilePreview');
+    const newFiles = Array.from(fileInput.files || []);
+    
+    if (newFiles.length === 0) {
+        renderFilePreview();
+        return;
+    }
+    // Append to existing list (avoid duplicates by key)
+    const existingKeys = new Set(disputeAttachmentFiles.map(fileKey));
+    for (const f of newFiles) {
+        if (!existingKeys.has(fileKey(f))) {
+            disputeAttachmentFiles.push(f);
+            existingKeys.add(fileKey(f));
+        }
+    }
+    renderFilePreview();
+    // Reset input so same file can be re-selected later
+    fileInput.value = '';
+}
+
+function renderFilePreview() {
+    const preview = document.getElementById('disputeFilePreview');
+    if (disputeAttachmentFiles.length === 0) {
+        preview.style.display = 'none';
+        preview.innerHTML = '';
+        return;
+    }
+    preview.innerHTML = '<div class="chat-file-preview-list">' +
+        disputeAttachmentFiles.map((f, i) => {
+            const key = fileKey(f);
+            const isImage = /^image\//.test(f.type);
+            const size = formatSize(f.size);
+            let previewHtml = '';
+            if (isImage) {
+                if (!disputeAttachmentUrls[key]) {
+                    disputeAttachmentUrls[key] = URL.createObjectURL(f);
+                }
+                previewHtml = `<img src="${disputeAttachmentUrls[key]}" alt="">`;
+            } else {
+                const { icon, color } = attIcon({ path: f.name, filename: f.name, mime_type: f.type });
+                previewHtml = `<div class="fp-icon"><i class="fas ${icon}" style="color:${color}"></i></div>`;
+            }
+            return `<div class="chat-file-preview">
+                ${previewHtml}
+                <div class="fp-info">
+                    <div class="fp-name">${escapeHtml(f.name)}</div>
+                    <div class="fp-size">${size}</div>
+                </div>
+                <i class="fas fa-times fp-remove" title="Hapus" onclick="removeDisputeFile(${i})"></i>
+            </div>`;
+        }).join('') + '</div>';
+    preview.style.display = 'block';
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function removeDisputeFile(idx) {
+    const f = disputeAttachmentFiles[idx];
+    if (f) {
+        const key = fileKey(f);
+        if (disputeAttachmentUrls[key]) {
+            URL.revokeObjectURL(disputeAttachmentUrls[key]);
+            delete disputeAttachmentUrls[key];
+        }
+    }
+    disputeAttachmentFiles.splice(idx, 1);
+    renderFilePreview();
+}
+
+function clearDisputeFiles() {
+    for (const key in disputeAttachmentUrls) {
+        URL.revokeObjectURL(disputeAttachmentUrls[key]);
+    }
+    disputeAttachmentUrls = {};
+    disputeAttachmentFiles = [];
+    renderFilePreview();
+    const input = document.getElementById('disputeFileInput');
+    if (input) input.value = '';
 }
 
 async function sendDisputeMessage() {
     const input = document.getElementById('disputeMessageInput');
     const pesan = input.value.trim();
-    if (!pesan) return;
+    const files = disputeAttachmentFiles;
+    
+    if (!pesan && files.length === 0) return;
     if (!currentDisputeId) {
         showToast('Dispute tidak ditemukan', 'error');
         return;
     }
     
-    const res = await api(`/api/disputes/${currentDisputeId}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ pesan })
-    });
+    let res;
+    if (files.length > 0) {
+        const formData = new FormData();
+        files.forEach(f => formData.append('attachments[]', f));
+        formData.append('pesan', pesan);
+        
+        res = await fetch(API + `/api/disputes/${currentDisputeId}/messages`, {
+            method: 'POST',
+            headers: { 'Accept': 'application/json' },
+            body: formData
+        });
+        try { res = await res.json(); } catch(e) { res = { error: 'Gagal memproses respons' }; }
+    } else {
+        res = await api(`/api/disputes/${currentDisputeId}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ pesan })
+        });
+    }
     
     if (res.success) {
         input.value = '';
+        clearDisputeFiles();
         await loadDisputeMessages();
     } else {
         showToast(res.error || 'Gagal mengirim pesan', 'error');
@@ -1634,41 +2089,59 @@ async function showAdminTab(tab) {
     }
     else if (tab === 'products') {
         const products = await api('/api/products?status=pending');
-        el.innerHTML = `<h2 style="margin-bottom:20px">Verifikasi Produk</h2>
-        <div class="data-list">
-            ${products.map(p => `
-            <div class="data-list-item">
-                <div><div class="item-main">${p.nama_produk}</div><div class="item-sub">${p.seller_nama}</div></div>
-                <div>Rp${(p.harga||0).toLocaleString()}/${p.satuan||'pcs'}</div>
-                <div>${p.stok} ${p.satuan||'pcs'}</div>
-                <div style="display:flex;gap:4px">
-                    <button class="btn-icon" title="Detail" onclick="showAdminProductDetail(${p.id_product})"><i class="fas fa-eye"></i></button>
-                    <select id="grade_${p.id_product}" style="padding:4px;border-radius:4px;border:1px solid var(--slate-200)">
-                        <option value="A">A</option><option value="B">B</option><option value="C">C</option>
-                    </select>
-                    <button class="btn btn-sm btn-primary" onclick="approveProduct(${p.id_product})">Setujui</button>
-                    <button class="btn btn-sm btn-danger" onclick="rejectProduct(${p.id_product})">Tolak</button>
+        const gradeColor = { A: 'var(--green-600)', B: 'var(--blue-500)', C: 'var(--yellow-500)' };
+        el.innerHTML = `<h2 style="margin-bottom:20px">Verifikasi Produk (${products.length})</h2>
+        <div class="adm-grid">
+            ${products.map(p => {
+                const gc = gradeColor[p.grade] || 'var(--slate-400)';
+                const foto = p.foto || '';
+                return `
+            <div class="adm-card">
+                <div class="adm-card-head">
+                    <span class="id">${p.nama_produk}</span>
+                    <span class="date">${p.seller_nama}</span>
                 </div>
-            </div>`).join('') || '<p style="padding:20px;text-align:center;color:var(--slate-400)">Semua produk sudah diverifikasi</p>'}
+                <div class="adm-card-body">
+                    ${foto ? `<img src="${foto}" style="width:100%;height:120px;object-fit:cover;border-radius:8px;margin-bottom:8px" onerror="this.outerHTML='<div style=\\'height:120px;background:var(--slate-100);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--slate-300);font-size:24px;margin-bottom:8px\\'><i class=\\'fas fa-image\\'></i></div>'">` : ''}
+                    <div class="row"><span>Harga</span><span class="v">Rp${(p.harga||0).toLocaleString()}<small style="font-size:11px;color:var(--slate-500)"> /${p.satuan||'pcs'}</small></span></div>
+                    <div class="row"><span>Stok</span><span class="v">${(p.stok||0).toLocaleString()} ${p.satuan||'pcs'}</span></div>
+                    <div class="row"><span>Grade</span><select id="grade_${p.id_product}" style="padding:4px 8px;border-radius:6px;border:1px solid var(--slate-200);font-size:12px;font-weight:600">
+                        <option value="A" style="color:var(--green-600)">A (Premium)</option>
+                        <option value="B" style="color:var(--blue-500)">B (Standar)</option>
+                        <option value="C" style="color:var(--yellow-500)">C (Ekonomi)</option>
+                    </select></div>
+                </div>
+                <div class="adm-card-foot">
+                    <button class="btn btn-sm btn-outline" onclick="showAdminProductDetail(${p.id_product})"><i class="fas fa-eye"></i> Detail</button>
+                    <button class="btn btn-sm btn-danger" onclick="rejectProduct(${p.id_product})"><i class="fas fa-times"></i> Tolak</button>
+                    <button class="btn btn-sm btn-primary" onclick="approveProduct(${p.id_product})"><i class="fas fa-check"></i> Setujui</button>
+                </div>
+            </div>`;
+            }).join('') || '<div class="adm-empty">Semua produk sudah diverifikasi</div>'}
         </div>`;
     }
     else if (tab === 'orders') {
         const orders = await api('/api/orders');
-        el.innerHTML = `<h2 style="margin-bottom:20px">Semua Order</h2>
-        <div class="data-list">
+        el.innerHTML = `<h2 style="margin-bottom:20px">Semua Order (${orders.length})</h2>
+        <div class="adm-grid">
             ${orders.map(o => `
-            <div class="data-list-item">
-                <div><div class="item-main">Order #${o.id_order}</div><div class="item-sub">${o.tanggal_order?.slice(0,10)||''}</div></div>
-                <div>Rp${(o.total_amount||0).toLocaleString()}</div>
-                <div><span class="status-badge status-${o.status_order}">${o.status_order}</span></div>
-                <div style="display:flex;gap:4px;align-items:center">
-                    <button class="btn-icon" title="Detail" onclick="showOrderDetail(${o.id_order})"><i class="fas fa-eye"></i></button>
-                    ${o.status_order === 'pending' ? `<button class="btn btn-sm btn-primary" onclick="adminApproveOrder(${o.id_order})" title="Approve & process">Approve</button>` : ''}
-                    ${o.status_order === 'pending' ? `<button class="btn btn-sm btn-danger" onclick="adminRejectOrder(${o.id_order})" title="Reject order">Reject</button>` : ''}
-                    ${o.status_order === 'shipped' ? `<button class="btn btn-sm btn-primary" onclick="adminSetStatus(${o.id_order}, 'confirmed')" title="Mark confirmed">Konfirmasi</button>` : ''}
-                    ${o.status_order === 'confirmed' || o.status_order === 'shipped' ? `<button class="btn btn-sm btn-success" onclick="adminReleaseEscrow(${o.id_order})" title="Release escrow to seller"><i class="fas fa-hand-holding-usd"></i> Cairkan Dana</button>` : ''}
+            <div class="adm-card" onclick="showOrderDetail(${o.id_order})" style="cursor:pointer">
+                <div class="adm-card-head">
+                    <span class="id">Order #${o.id_order}</span>
+                    <span class="status-badge status-${o.status_order}" style="font-size:10px;padding:2px 8px">${o.status_order}</span>
                 </div>
-            </div>`).join('') || '<p style="padding:20px;text-align:center;color:var(--slate-400)">Belum ada order</p>'}
+                <div class="adm-card-body">
+                    <div class="row"><span>Tanggal</span><span class="v">${o.tanggal_order?.slice(0,10)||'-'}</span></div>
+                    <div class="row"><span>Buyer</span><span class="v">${o.buyer_nama||'-'}</span></div>
+                    <div class="row"><span>Seller</span><span class="v">${o.seller_nama||'-'}</span></div>
+                    <div class="row"><span>Total</span><span class="v" style="color:var(--green-700)">Rp${(o.total_amount||0).toLocaleString()}</span></div>
+                    ${o.payment ? `<div class="row"><span>Escrow</span><span class="v">${o.payment.status_escrow||'-'}</span></div>` : ''}
+                </div>
+                <div class="adm-card-foot">
+                    ${o.tracking_number && (o.status_order === 'shipped' || o.status_order === 'disputed') ? `<button class="btn btn-sm btn-action-info" title="Tracking" onclick="event.stopPropagation();showTracking(${o.id_order})"><i class="fas fa-truck"></i></button>` : ''}
+                    ${(o.status_order === 'shipped' || o.status_order === 'confirmed') && o.payment && o.payment.status_escrow !== 'released' ? `<button class="btn btn-sm btn-action-success" onclick="event.stopPropagation();adminReleaseEscrow(${o.id_order})"><i class="fas fa-hand-holding-usd"></i> Cairkan</button>` : ''}
+                </div>
+            </div>`).join('') || '<div class="adm-empty">Belum ada order</div>'}
         </div>`;
     }
     else if (tab === 'disputes') {
@@ -1869,7 +2342,7 @@ async function showNotifications() {
             action += ';navigate(\'products\');closeNotifPanel()';
         } else if (n.tipe === 'verification') {
             action += ';navigate(\'profile\');closeNotifPanel()';
-        } else if (n.tipe === 'dispute_message' || n.tipe === 'dispute_resolved') {
+        } else if (n.tipe === 'dispute_opened' || n.tipe === 'dispute_message' || n.tipe === 'dispute_resolved') {
             var meta = safeMeta(n.metadata);
             if (meta.order_id) {
                 action += ';openDisputeChat(' + meta.order_id + ');closeNotifPanel()';
@@ -2013,7 +2486,8 @@ async function openChat(userId, name) {
 async function loadMessages(userId) {
     const msgs = await api(`/api/messages/${userId}`);
     const el = document.getElementById('chatMessages');
-    el.innerHTML = msgs.map(m => {
+    chatMsgsCache = msgs || [];
+    el.innerHTML = (msgs || []).map(m => {
         const isMe = m.sender_id === currentUser.id_user;
         const isNego = m.id_product && m.nama_produk;
         const isSellerReceiving = isNego && !isMe && currentUser.id_role === 2;
@@ -2030,24 +2504,237 @@ async function loadMessages(userId) {
                 </div>`;
         }
 
+        // Attachments — show a compact preview + a "Files" button that opens the centered modal
+        let attHtml = '';
+        const atts = Array.isArray(m.attachments) ? m.attachments : [];
+        if (atts.length > 0) {
+            const images = atts.filter(a => isImageType(a));
+            const preview = images.slice(0, 3).map(a => {
+                const url = fullUrl(a.path);
+                return `<img class="chat-att-thumb" src="${escapeHtml(url)}" alt="${escapeHtml(a.filename||'')}" onclick="openChatFilesModal(${m.id_message})" onerror="this.style.display='none'">`;
+            }).join('');
+            const total = atts.length;
+            const label = total === 1 ? '1 file' : `${total} files`;
+            const badge = `<div class="chat-att-badge" onclick="openChatFilesModal(${m.id_message})"><i class="fas fa-paperclip"></i> ${escapeHtml(label)}</div>`;
+            const extra = images.length > 3 ? `<span class="chat-att-more">+${images.length - 3}</span>` : '';
+            attHtml = `<div class="chat-att-row">${preview}${extra}${badge}</div>`;
+        }
+
         // Show action buttons for seller receiving nego
         let actionBtns = '';
         if (isSellerReceiving && !m.id_order) {
-            actionBtns = `<div style="display:flex;gap:8px;margin-top:10px">
-                    <button class="btn btn-success" style="padding:6px 14px;font-size:12px;border-radius:20px" onclick="acceptNego(${m.id_message})"><i class="fas fa-check"></i> Terima</button>
-                    <button class="btn btn-danger" style="padding:6px 14px;font-size:12px;border-radius:20px" onclick="rejectNego(${m.id_message})"><i class="fas fa-times"></i> Tolak</button>
-                    <button class="btn btn-outline" style="padding:6px 14px;font-size:12px;border-radius:20px" onclick="counterNego(${m.id_message},${m.id_product},${m.harga})"><i class="fas fa-dollar-sign"></i> Banding</button>
+            actionBtns = `<div class="nego-actions">
+                    <button class="btn btn-success btn-nego" onclick="acceptNego(${m.id_message})"><i class="fas fa-check"></i> Terima</button>
+                    <button class="btn btn-danger btn-nego" onclick="rejectNego(${m.id_message})"><i class="fas fa-times"></i> Tolak</button>
+                    <button class="btn btn-outline btn-nego" onclick="counterNego(${m.id_message},${m.id_product},${m.harga})"><i class="fas fa-dollar-sign"></i> Banding</button>
                 </div>`;
         }
 
-        return `<div class="chat-msg ${isMe ? 'sent' : 'received'}">
+        const delBtn = isMe ? `<i class="fas fa-trash-alt chat-msg-del" title="Hapus pesan" onclick="deleteChatMessage(${m.id_message})"></i>` : '';
+
+        return `<div class="chat-msg ${isMe ? 'sent' : 'received'}" data-msg-id="${m.id_message}">
             ${m.pesan}
             ${extra}
+            ${attHtml}
             ${actionBtns}
-            <div class="chat-msg-time">${m.sent_at?.slice(11,16)||''}</div>
+            <div class="chat-msg-time">${m.sent_at?.slice(11,16)||''} ${delBtn}</div>
         </div>`;
     }).join('') || '<p style="text-align:center;color:var(--slate-400);padding:20px">Belum ada pesan</p>';
     el.scrollTop = el.scrollHeight;
+}
+
+// ===== CHAT FILE UPLOAD (pending attachments) =====
+let chatAttachmentFiles = [];
+let chatAttachmentUrls = {};
+
+function onChatFileSelect() {
+    const input = document.getElementById('chatFileInput');
+    const newFiles = Array.from(input.files || []);
+    const existingKeys = new Set(chatAttachmentFiles.map(fileKey));
+    for (const f of newFiles) {
+        if (!existingKeys.has(fileKey(f))) {
+            chatAttachmentFiles.push(f);
+            existingKeys.add(fileKey(f));
+        }
+    }
+    renderChatFilePreview();
+    input.value = '';
+}
+
+function renderChatFilePreview() {
+    const preview = document.getElementById('chatFilePreview');
+    if (chatAttachmentFiles.length === 0) {
+        preview.style.display = 'none';
+        preview.innerHTML = '';
+        return;
+    }
+    preview.innerHTML = '<div class="chat-file-preview-list">' +
+        chatAttachmentFiles.map((f, i) => {
+            const key = fileKey(f);
+            const isImage = /^image\//.test(f.type);
+            const size = formatSize(f.size);
+            let previewHtml = '';
+            if (isImage) {
+                if (!chatAttachmentUrls[key]) chatAttachmentUrls[key] = URL.createObjectURL(f);
+                previewHtml = `<img src="${chatAttachmentUrls[key]}" alt="">`;
+            } else {
+                const icon = /^video\//.test(f.type) ? 'fa-file-video'
+                           : /^audio\//.test(f.type) ? 'fa-file-audio'
+                           : /pdf/i.test(f.type) ? 'fa-file-pdf'
+                           : /word|doc/i.test(f.type) ? 'fa-file-word'
+                           : /excel|sheet|xls/i.test(f.type) ? 'fa-file-excel'
+                           : 'fa-file';
+                const color = /^video\//.test(f.type) ? 'var(--purple-500)'
+                             : /^audio\//.test(f.type) ? 'var(--cyan-500)'
+                             : /pdf/i.test(f.type) ? 'var(--red-500)'
+                             : /word|doc/i.test(f.type) ? 'var(--blue-500)'
+                             : /excel|sheet|xls/i.test(f.type) ? 'var(--green-600)'
+                             : 'var(--slate-500)';
+                previewHtml = `<div class="fp-icon"><i class="fas ${icon}" style="color:${color}"></i></div>`;
+            }
+            return `<div class="chat-file-preview">
+                ${previewHtml}
+                <div class="fp-info">
+                    <div class="fp-name">${escapeHtml(f.name)}</div>
+                    <div class="fp-size">${size}</div>
+                </div>
+                <i class="fas fa-times fp-remove" title="Hapus" onclick="removeChatFile(${i})"></i>
+            </div>`;
+        }).join('') + '</div>';
+    preview.style.display = 'block';
+}
+
+function removeChatFile(idx) {
+    const f = chatAttachmentFiles[idx];
+    if (f) {
+        const key = fileKey(f);
+        if (chatAttachmentUrls[key]) {
+            URL.revokeObjectURL(chatAttachmentUrls[key]);
+            delete chatAttachmentUrls[key];
+        }
+    }
+    chatAttachmentFiles.splice(idx, 1);
+    renderChatFilePreview();
+}
+
+function clearChatFiles() {
+    for (const key in chatAttachmentUrls) URL.revokeObjectURL(chatAttachmentUrls[key]);
+    chatAttachmentUrls = {};
+    chatAttachmentFiles = [];
+    renderChatFilePreview();
+    const input = document.getElementById('chatFileInput');
+    if (input) input.value = '';
+}
+
+async function sendChat() {
+    const input = document.getElementById('chatInput');
+    const text = input.value.trim();
+    const files = chatAttachmentFiles;
+    if (!text && files.length === 0) return;
+    if (!currentChatUser) return;
+
+    let res;
+    if (files.length > 0) {
+        const formData = new FormData();
+        files.forEach(f => formData.append('attachments[]', f));
+        formData.append('pesan', text);
+        formData.append('receiver_id', currentChatUser.id);
+        res = await fetch(API + '/api/messages', {
+            method: 'POST',
+            headers: { 'Accept': 'application/json' },
+            body: formData
+        });
+        try { res = await res.json(); } catch(e) { res = { error: 'Gagal memproses respons' }; }
+    } else {
+        res = await api('/api/messages', {
+            method: 'POST',
+            body: JSON.stringify({ receiver_id: currentChatUser.id, pesan: text })
+        });
+    }
+
+    if (res.success) {
+        input.value = '';
+        clearChatFiles();
+        await loadMessages(currentChatUser.id);
+    } else {
+        showToast(res.error || 'Gagal mengirim pesan', 'error');
+    }
+}
+
+// ===== CHAT FILES MODAL (centered list of attachments for a message) =====
+let chatFilesMsgId = null;
+
+function openChatFilesModal(msgId) {
+    const msg = (chatMsgsCache || []).find(m => m.id_message === msgId);
+    if (!msg || !Array.isArray(msg.attachments) || msg.attachments.length === 0) return;
+    chatFilesMsgId = msgId;
+    document.getElementById('chatFilesModalTitle').textContent = `Files (${msg.attachments.length})`;
+    const body = document.getElementById('chatFilesModalBody');
+    body.innerHTML = msg.attachments.map(a => {
+        const url = fullUrl(a.path);
+        const fname = a.filename || a.path.split('/').pop() || 'File';
+        const isImage = isImageType(a);
+        const isVideo = isVideoType(a);
+        const isAudio = isAudioType(a);
+        let preview = '';
+        if (isImage) preview = `<img src="${escapeHtml(url)}" alt="" loading="lazy">`;
+        else if (isVideo) preview = `<video src="${escapeHtml(url)}" controls preload="metadata"></video>`;
+        else if (isAudio) preview = `<audio src="${escapeHtml(url)}" controls style="width:100%"></audio>`;
+        else {
+            const { icon, color } = attIcon(a);
+            preview = `<div class="chat-file-icon"><i class="fas ${icon}" style="color:${color}"></i></div>`;
+        }
+        return `<div class="chat-file-item">
+            <div class="chat-file-preview-box">${preview}</div>
+            <div class="chat-file-info">
+                <div class="chat-file-name" title="${escapeHtml(fname)}">${escapeHtml(fname)}</div>
+                <div class="chat-file-meta">${escapeHtml(formatSize(a.size))}${a.mime_type ? ' • ' + escapeHtml(a.mime_type) : ''}</div>
+            </div>
+            <div class="chat-file-actions">
+                <a href="${escapeHtml(url)}" target="_blank" download class="btn btn-sm btn-outline"><i class="fas fa-download"></i></a>
+            </div>
+        </div>`;
+    }).join('');
+
+    const footer = document.getElementById('chatFilesModalFooter');
+    const isMe = currentUser && msg.sender_id === currentUser.id_user;
+    const isAdmin = currentUser && currentUser.id_role === 1;
+    footer.innerHTML = (isMe || isAdmin)
+        ? `<button class="btn btn-danger" onclick="deleteChatMessageFromModal()"><i class="fas fa-trash"></i> Hapus Pesan &amp; Files</button>`
+        : '';
+
+    document.getElementById('chatFilesModal').style.display = 'flex';
+}
+
+function closeChatFilesModal() {
+    document.getElementById('chatFilesModal').style.display = 'none';
+    chatFilesMsgId = null;
+}
+
+function deleteChatMessageFromModal() {
+    const msgId = chatFilesMsgId;
+    closeChatFilesModal();
+    if (msgId) deleteChatMessage(msgId);
+}
+
+async function deleteChatMessage(msgId) {
+    if (!confirm('Hapus pesan ini? Semua file terlampir juga akan dihapus.')) return;
+    if (!currentChatUser) return;
+    const msg = document.querySelector(`#chatMessages [data-msg-id="${msgId}"]`);
+    if (msg) msg.style.opacity = '0.5';
+    try {
+        const res = await api(`/api/messages/${msgId}`, { method: 'DELETE' });
+        if (res.success) {
+            showToast('Pesan dihapus', 'success');
+            await loadMessages(currentChatUser.id);
+        } else {
+            showToast(res.error || 'Gagal menghapus', 'error');
+            await loadMessages(currentChatUser.id);
+        }
+    } catch(e) {
+        showToast('Gagal menghapus pesan', 'error');
+        await loadMessages(currentChatUser.id);
+    }
 }
 
 async function acceptNego(messageId) {
@@ -2091,38 +2778,28 @@ async function rejectNego(messageId) {
 
 async function counterNego(messageId, productId, originalHarga) {
     if (!currentUser) return;
-    const newHarga = prompt('Harga banding Anda (Rp):', originalHarga);
-    if (!newHarga) return;
-    const res = await api('/api/messages/negotiation/counter', {
-        method: 'POST',
-        body: JSON.stringify({
-            message_id: messageId,
-            id_product: productId,
-            seller_id: currentUser.id_user,
-            buyer_id: currentChatUser.id,
-            harga: parseInt(newHarga)||0,
-            nama_produk: '',
-            foto_produk: ''
-        })
-    });
-    if (res.success) {
-        showToast('Banding terkirim!', 'success');
-        await loadMessages(currentChatUser.id);
-    } else {
-        showToast(res.error || 'Gagal banding', 'error');
-    }
-}
-
-async function sendChat() {
-    const input = document.getElementById('chatInput');
-    const text = input.value.trim();
-    if (!text || !currentChatUser) return;
-    await api('/api/messages', {
-        method: 'POST',
-        body: JSON.stringify({ receiver_id: currentChatUser.id, pesan: text })
-    });
-    input.value = '';
-    await loadMessages(currentChatUser.id);
+    showPrompt('Bandingkan Harga', 'Masukkan harga banding Anda:', (value) => {
+        const newHarga = value.input;
+        if (!newHarga) {
+            showToast('Harga wajib diisi', 'error');
+            return;
+        }
+        api('/api/messages/negotiation/counter', {
+            method: 'POST',
+            body: JSON.stringify({
+                message_id: messageId,
+                id_product: productId,
+                seller_id: currentUser.id_user,
+                buyer_id: currentChatUser.id,
+                harga: parseInt(newHarga)||0,
+                nama_produk: '',
+                foto_produk: ''
+            })
+        }).then(() => {
+            showToast('Counter-offer dikirim!', 'success');
+            loadMessages(currentChatUser.id);
+        });
+    }, originalHarga, 'input');
 }
 
 function backToConvos() {
@@ -2135,6 +2812,65 @@ function backToConvos() {
 // ===== MODALS =====
 function closeModal(id) {
     document.getElementById(id).style.display = 'none';
+}
+
+// Custom confirm modal (replace native confirm())
+function showConfirm(title, msg, onConfirm, confirmText = 'Hapus', cancelText = 'Batal') {
+    const modal = document.getElementById('confirmModal');
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMsg').textContent = msg;
+    const okBtn = document.getElementById('confirmOk');
+    const cancelBtn = document.getElementById('confirmCancel');
+    okBtn.textContent = confirmText;
+    cancelBtn.textContent = cancelText;
+    
+    // Remove old listeners
+    okBtn.onclick = null;
+    cancelBtn.onclick = null;
+    
+    okBtn.onclick = () => {
+        closeModal('confirmModal');
+        if (onConfirm) onConfirm();
+    };
+    cancelBtn.onclick = () => closeModal('confirmModal');
+    
+    modal.style.display = 'flex';
+}
+
+// Custom prompt modal (replace native prompt())
+// mode: 'input' (default), 'textarea', or 'both' (show both input + textarea)
+function showPrompt(title, msg, onConfirm, defaultValue = '', mode = 'input') {
+    const modal = document.getElementById('promptModal');
+    document.getElementById('promptTitle').textContent = title;
+    document.getElementById('promptMsg').textContent = msg;
+    const input = document.getElementById('promptInput');
+    const textarea = document.getElementById('promptTextarea');
+    const okBtn = document.getElementById('promptOk');
+    const cancelBtn = document.getElementById('promptCancel');
+    
+    input.value = defaultValue || '';
+    input.style.display = (mode === 'textarea') ? 'none' : 'block';
+    textarea.style.display = (mode === 'input') ? 'none' : 'block';
+    textarea.value = '';
+    
+    okBtn.onclick = null;
+    cancelBtn.onclick = null;
+    
+    okBtn.onclick = () => {
+        const value = {
+            input: input.value,
+            textarea: textarea.value
+        };
+        closeModal('promptModal');
+        if (onConfirm) onConfirm(value);
+    };
+    cancelBtn.onclick = () => closeModal('promptModal');
+    
+    modal.style.display = 'flex';
+    setTimeout(() => {
+        if (mode === 'textarea') textarea.focus();
+        else input.focus();
+    }, 100);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -2260,20 +2996,119 @@ async function showOrdersPage() {
         return;
     }
     var orders = await api('/api/orders');
-    if (currentUser.id_role === 3) orders = orders.filter(function(o) { return o.id_buyer === currentUser.id_user; });
     if (!orders || orders.length === 0) {
-        el.innerHTML = '<div class="empty-state"><i class="fas fa-shopping-bag"></i><p>Belum ada pesanan</p><small><button class="btn btn-primary" onclick="navigate(\'products\')">Belanja Sekarang</button></small></div>';
+        el.innerHTML = '<div class="buyer-order-empty"><i class="fas fa-box"></i><h3>Belum ada order</h3><p>Belanja produk dari seller di Taniku</p></div>';
         return;
     }
-    el.innerHTML = orders.map(function(o) {
-        return '<div class="order-card" onclick="showOrderDetail(' + o.id_order + ')">' +
-            '<div class="order-card-top"><span class="order-card-id">Order #' + o.id_order + '</span>' +
-            '<span class="status-badge status-' + o.status_order + '">' + o.status_order + '</span></div>' +
-            '<div class="order-card-body"><div class="order-card-amount">Rp' + (o.total_amount||0).toLocaleString() + '</div>' +
-            '<div class="order-card-date">' + (o.tanggal_order ? o.tanggal_order.slice(0,10) : '-') + '</div></div>' +
-            '<div class="order-card-bottom"><span class="order-card-seller"><i class="fas fa-store"></i> ' + (o.id_buyer === currentUser.id_user ? 'Anda' : 'Penjual') + '</span>' +
-            '<button class="btn btn-sm btn-outline">Detail</button></div></div>';
-    }).join('');
+    el.innerHTML = '<div class="buyer-order-grid">' + orders.map(function(o) {
+        return '<div class="buyer-order-card" onclick="showOrderDetail(' + o.id_order + ')">' +
+            '<div class="buyer-order-head">' +
+                '<span class="order-id">Order #' + o.id_order + '</span>' +
+                '<span class="order-date">' + (o.tanggal_order ? o.tanggal_order.slice(0,10) : '-') + '</span>' +
+            '</div>' +
+            '<div class="buyer-order-items">' +
+                ((o.items||[]).map(function(i) {
+                    return '<div class="buyer-order-item">' +
+                        '<img src="' + (i.foto || 'https://via.placeholder.com/60') + '" alt="' + (i.nama_produk || '') + '" class="item-img" onerror="this.src=\'https://via.placeholder.com/60?text=No+Img\'">' +
+                        '<div class="item-info">' +
+                            '<div class="item-name">' + (i.nama_produk || '') + '</div>' +
+                            '<div class="item-meta">' +
+                                '<span class="item-qty">' + (i.quantity || 1) + ' ' + (i.satuan || 'pcs') + '</span>' +
+                                '<span class="item-price">Rp' + ((i.subtotal || i.harga || 0)).toLocaleString() + '</span>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+                }).join('') || '<div class="buyer-order-empty" style="padding:20px;text-align:center;color:var(--slate-400);font-size:13px">Tidak ada item</div>') +
+            '</div>' +
+            '<div class="buyer-order-total">' +
+                '<span class="total-label">Total</span>' +
+                '<span class="total-amount">Rp' + (o.total_amount || 0).toLocaleString() + '</span>' +
+            '</div>' +
+            '<div class="buyer-order-actions">' +
+                (o.status_order === 'pending' ? '<button class="btn btn-action-primary" onclick="event.stopPropagation();payOrder(' + o.id_order + ')"><i class="fas fa-credit-card"></i> Bayar</button>' : '') +
+                (o.status_order === 'paid' ? '<button class="btn btn-action-info" onclick="event.stopPropagation();showTracking(' + o.id_order + ')"><i class="fas fa-truck"></i> Tracking</button>' : '') +
+                (o.status_order === 'shipped' ? '<button class="btn btn-action-info" onclick="event.stopPropagation();showTracking(' + o.id_order + ')"><i class="fas fa-truck"></i> Tracking</button>' : '') +
+                (o.status_order === 'shipped' ? '<button class="btn btn-action-success" onclick="event.stopPropagation();updateOrderStatus(' + o.id_order + ',\'confirmed\')"><i class="fas fa-check"></i> Received</button>' : '') +
+                (o.status_order === 'shipped' ? '<button class="btn btn-action-danger" onclick="event.stopPropagation();openDispute(' + o.id_order + ')"><i class="fas fa-flag"></i> Dispute</button>' : '') +
+                (o.status_order === 'disputed' ? '<button class="btn btn-action-warning" onclick="event.stopPropagation();openDisputeChat(' + o.id_order + ')"><i class="fas fa-comments"></i> Lihat Dispute</button>' : '') +
+                (o.status_order === 'disputed' ? '<button class="btn btn-action-info" onclick="event.stopPropagation();showTracking(' + o.id_order + ')"><i class="fas fa-truck"></i> Tracking</button>' : '') +
+                (o.status_order === 'confirmed' ? '<button class="btn btn-action-info" onclick="event.stopPropagation();showTracking(' + o.id_order + ')"><i class="fas fa-truck"></i> Tracking</button>' : '') +
+            '</div>' +
+        '</div>';
+    }).join('') + '</div>';
+}
+
+async function showTracking(orderId) {
+    // Load the real order data so buyer and seller see the SAME resi/service
+    const o = await api(`/api/orders/${orderId}`);
+    if (!o || o.error) { showToast('Order tidak ditemukan', 'error'); return; }
+    const trackingNo = (o.tracking_number || '-').toString();
+    const courier = (o.shipping_service || '-').toString();
+    // Derive a plausible status label from the order lifecycle (no fake history)
+    const statusMap = {
+        'paid': 'Menunggu Pengiriman',
+        'approved': 'Menunggu Pengiriman',
+        'shipped': 'Dalam Perjalanan',
+        'confirmed': 'Tiba di Tujuan',
+        'disputed': 'Tiba di Tujuan',
+        'completed': 'Selesai'
+    };
+    const statusMapColor = {
+        'Menunggu Pengiriman': 'var(--slate-400)',
+        'Dalam Perjalanan': 'var(--yellow-500)',
+        'Tiba di Tujuan': 'var(--green-600)',
+        'Selesai': 'var(--green-700)'
+    };
+    const status = statusMap[o.status_order] || 'Dalam Perjalanan';
+    const color = statusMapColor[status] || 'var(--slate-500)';
+    const modal = document.getElementById('productModal');
+    const content = document.getElementById('productDetailContent');
+    content.innerHTML = `
+        <h2 style="margin-bottom:4px">Tracking Pesanan</h2>
+        <p style="color:var(--slate-500);margin-bottom:16px;font-size:13px">Order #${orderId}</p>
+        <div style="background:var(--slate-50);border-radius:12px;padding:16px;margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span style="font-weight:700;color:var(--slate-800)"><i class="fas fa-truck" style="color:${color};margin-right:8px"></i>${escapeHtml(courier)}</span>
+                <span style="padding:4px 12px;border-radius:20px;background:${color};color:#fff;font-size:11px;font-weight:700">${escapeHtml(status)}</span>
+            </div>
+            <div style="font-size:13px;color:var(--slate-600)">No. Resi: <strong style="color:var(--slate-800)">${escapeHtml(trackingNo)}</strong></div>
+        </div>
+        <h4 style="margin-bottom:12px"><i class="fas fa-clock"></i> Riwayat Pengiriman</h4>
+        <div style="max-height:300px;overflow-y:auto">
+            <div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--slate-100)">
+                <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">
+                    <div style="width:12px;height:12px;border-radius:50%;background:var(--slate-300);border:2px solid #fff;box-shadow:0 0 0 2px var(--slate-300)"></div>
+                    <div style="width:2px;flex:1;min-height:30px;background:var(--slate-200)"></div>
+                </div>
+                <div style="flex:1">
+                    <div style="font-size:13px;font-weight:600;color:var(--slate-800)">Pesanan Dibuat</div>
+                    <div style="font-size:12px;color:var(--slate-500);margin-top:2px">${o.tanggal_order ? new Date(o.tanggal_order).toLocaleString('id-ID') : '-'}</div>
+                </div>
+            </div>
+            ${trackingNo !== '-' ? `
+            <div style="display:flex;gap:12px;padding:12px 0;${o.status_order !== 'confirmed' && o.status_order !== 'completed' && o.status_order !== 'disputed' ? 'border-bottom:1px solid var(--slate-100)' : ''}">
+                <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">
+                    <div style="width:12px;height:12px;border-radius:50%;background:var(--green-600);border:2px solid #fff;box-shadow:0 0 0 2px var(--green-600)"></div>
+                    <div style="width:2px;flex:1;min-height:30px;background:var(--slate-200)"></div>
+                </div>
+                <div style="flex:1">
+                    <div style="font-size:13px;font-weight:600;color:var(--green-700)">Pesanan Dikirim oleh ${escapeHtml(o.id_seller || 'seller')}</div>
+                    <div style="font-size:12px;color:var(--slate-500);margin-top:2px">Resi ${escapeHtml(trackingNo)} via ${escapeHtml(courier)}</div>
+                </div>
+            </div>` : ''}
+            ${(o.status_order === 'confirmed' || o.status_order === 'completed' || o.status_order === 'disputed') ? `
+            <div style="display:flex;gap:12px;padding:12px 0">
+                <div style="display:flex;align-items:center;flex-shrink:0">
+                    <div style="width:12px;height:12px;border-radius:50%;background:var(--green-700);border:2px solid #fff;box-shadow:0 0 0 2px var(--green-700)"></div>
+                </div>
+                <div style="flex:1">
+                    <div style="font-size:13px;font-weight:600;color:var(--green-700)">Barang Diterima Buyer</div>
+                    <div style="font-size:12px;color:var(--slate-500);margin-top:2px">Status: ${escapeHtml(status)}</div>
+                </div>
+            </div>` : ''}
+        </div>
+    `;
+    modal.style.display = 'flex';
 }
 
 // ===== HISTORY PAGE =====

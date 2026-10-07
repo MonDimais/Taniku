@@ -11,7 +11,9 @@ return new class extends Migration
         Schema::table('users', function (Blueprint $table) {
             // Cumulative earnings. Sellers accrue this when the admin releases
             // their escrow; admins accrue the platform fee portion.
-            $table->decimal('pendapatan', 15, 2)->default(0)->after('alamat');
+            if (!Schema::hasColumn('users', 'pendapatan')) {
+                $table->decimal('pendapatan', 15, 2)->default(0)->after('alamat');
+            }
         });
     }
 
