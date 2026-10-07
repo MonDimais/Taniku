@@ -9,13 +9,18 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('orders', function (Blueprint $table) {
-            // Approve/ship workflow fields. The OrderController's updateStatus()
-            // already wrote these columns, but they were missing from the schema,
-            // so approving or shipping an order returned HTTP 500.
-            $table->string('packing_photo')->nullable()->after('alamat_pengiriman');
-            $table->string('tracking_number')->nullable()->after('packing_photo');
-            $table->string('shipping_service')->nullable()->after('tracking_number');
-            $table->integer('shipping_cost')->nullable()->default(0)->after('shipping_service');
+            if (!Schema::hasColumn('orders', 'packing_photo')) {
+                $table->string('packing_photo')->nullable()->after('alamat_pengiriman');
+            }
+            if (!Schema::hasColumn('orders', 'tracking_number')) {
+                $table->string('tracking_number')->nullable()->after('packing_photo');
+            }
+            if (!Schema::hasColumn('orders', 'shipping_service')) {
+                $table->string('shipping_service')->nullable()->after('tracking_number');
+            }
+            if (!Schema::hasColumn('orders', 'shipping_cost')) {
+                $table->integer('shipping_cost')->nullable()->default(0)->after('shipping_service');
+            }
         });
     }
 

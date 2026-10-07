@@ -82,7 +82,28 @@ class MessageController extends Controller
             ->where('receiver_id', $user->id_user)
             ->whereNull('read_at')
             ->update(['read_at' => now()]);
-        return response()->json($msgs);
+        // Attach related messages_attachments for each message
+        $attRows = DB::table('messages_attachments')
+            ->whereIn('id_message', $msgs->pluck('id_message')->all())
+            ->orderBy('id_attachment', 'asc')
+            ->get();
+        $attByMsg = [];
+        foreach ($attRows as $a) {
+            $attByMsg[$a->id_message][] = [
+                'id_attachment' => $a->id_attachment,
+                'path' => $a->path,
+                'filename' => $a->filename,
+                'mime_type' => $a->mime_type,
+                'size' => $a->size,
+            ];
+        }
+        $result = [];
+        foreach ($msgs as $m) {
+            $arr = (array) $m;
+            $arr['attachments'] = $attByMsg[$m->id_message] ?? [];
+            $result[] = $arr;
+        }
+        return response()->json($result);
     }
 
     public function send(Request $request)
@@ -91,17 +112,109 @@ class MessageController extends Controller
         if (!$user) {
             return response()->json(['error' => 'Not authorized'], 401);
         }
-        $data = $request->json()->all();
-        $guard = $this->chatAllowed($user, $data['receiver_id']);
+
+        // Handle file upload first if present
+        $attachments = [];
+        if ($request->hasFile('attachments')) {
+            $files = $request->file('attachments');
+            $maxSize = 10 * 1024 * 1024;
+            $allowedExtensions = ['jpg','jpeg','png','gif','webp','mp4','mov','webm','pdf','doc','docx','xls','xlsx','csv','mp3','wav','ogg','aac'];
+            foreach ($files as $file) {
+                if ($file->getSize() > $maxSize) {
+                    return response()->json(['error' => 'File terlalu besar (maks 10MB tiap file)'], 422);
+                }
+                $ext = strtolower($file->getClientOriginalExtension());
+                if (!in_array($ext, $allowedExtensions)) {
+                    return response()->json(['error' => 'Tipe file tidak diizinkan: ' . $ext], 422);
+                }
+                $filename = 'chat_' . time() . '_' . uniqid() . '.' . $ext;
+                $file->storeAs('public/uploads/chats', $filename);
+                $path = '/storage/uploads/chats/' . $filename;
+                $attachments[] = [
+                    'path' => $path,
+                    'filename' => $file->getClientOriginalName(),
+                    'mime_type' => $file->getMimeType(),
+                    'size' => $file->getSize(),
+                ];
+            }
+        }
+
+        // pesan: support both JSON and FormData (multipart when file attached)
+        // IMPORTANT: do not read the JSON body stream on multipart requests.
+        $pesan = trim($request->input('pesan') ?? '');
+        if ($pesan === '' && ($request->header('Content-Type') ?? '') !== '') {
+            $ct = $request->header('Content-Type');
+            if (stripos($ct, 'application/json') !== false) {
+                $pesan = trim($request->json()->input('pesan') ?? '');
+            }
+        }
+
+        // receiver_id is always in the JSON body (chat is always with a specific user)
+        $receiverId = (int) ($request->input('receiver_id') ?? 0);
+        if (!$receiverId && $pesan === '') {
+            // Fallback: pull from JSON body if this is a pure JSON request
+            $json = $request->json()->all();
+            $receiverId = (int) ($json['receiver_id'] ?? 0);
+            $pesan = trim($json['pesan'] ?? '');
+        }
+        if (!$receiverId) {
+            return response()->json(['error' => 'receiver_id wajib diisi'], 422);
+        }
+        $guard = $this->chatAllowed($user, $receiverId);
         if ($guard) return $guard;
+        if (empty($pesan) && empty($attachments)) {
+            return response()->json(['error' => 'Pesan atau file wajib diisi'], 422);
+        }
+        if (empty($pesan)) {
+            $pesan = '[File attachment]';
+        }
+
         $id = DB::table('messages')->insertGetId([
             'sender_id' => $user->id_user,
-            'receiver_id' => $data['receiver_id'],
-            'id_order' => $data['id_order'] ?? null,
-            'pesan' => $data['pesan'],
+            'receiver_id' => $receiverId,
+            'id_order' => null,
+            'pesan' => $pesan,
             'sent_at' => now(),
         ], 'id_message');
-        return response()->json(['success' => true, 'id_message' => $id], 201);
+
+        foreach ($attachments as $att) {
+            DB::table('messages_attachments')->insert([
+                'id_message' => $id,
+                'path' => $att['path'],
+                'filename' => $att['filename'],
+                'mime_type' => $att['mime_type'],
+                'size' => $att['size'],
+                'created_at' => now(),
+            ]);
+        }
+
+        return response()->json(['success' => true, 'id_message' => $id, 'attachments' => $attachments], 201);
+    }
+
+    public function deleteMessage(Request $request, $messageId)
+    {
+        $user = $this->requireLogin();
+        if (!$user) {
+            return response()->json(['error' => 'Not authorized'], 401);
+        }
+        $msg = DB::table('messages')->where('id_message', $messageId)->first();
+        if (!$msg) {
+            return response()->json(['error' => 'Pesan tidak ditemukan'], 404);
+        }
+        // Only sender or admin can delete
+        if ($msg->sender_id != $user->id_user && $user->id_role != 1) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
+        // Delete attachment files from disk
+        $atts = DB::table('messages_attachments')->where('id_message', $messageId)->get();
+        foreach ($atts as $att) {
+            if (is_file(public_path($att->path))) {
+                @unlink(public_path($att->path));
+            }
+        }
+        DB::table('messages_attachments')->where('id_message', $messageId)->delete();
+        DB::table('messages')->where('id_message', $messageId)->delete();
+        return response()->json(['success' => true]);
     }
 
     public function sendNegotiation(Request $request)

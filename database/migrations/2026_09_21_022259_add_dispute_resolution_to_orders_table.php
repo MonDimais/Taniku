@@ -9,10 +9,9 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('orders', function (Blueprint $table) {
-            // Set by the DisputeController when a dispute is resolved so the
-            // order history shows how it was settled. Missing this column made
-            // POST /api/disputes/{id}/resolve return HTTP 500.
-            $table->string('dispute_resolution')->nullable()->after('shipping_cost');
+            if (!Schema::hasColumn('orders', 'dispute_resolution')) {
+                $table->string('dispute_resolution')->nullable()->after('shipping_cost');
+            }
         });
     }
 

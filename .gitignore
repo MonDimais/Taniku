@@ -17,3 +17,9 @@ yarn-error.log
 /.fleet
 /.idea
 /.vscode
+
+# Windows reserved device name (cannot be committed by git)
+/nul
+nul
+cookies.txt
+cookies_admin.txt

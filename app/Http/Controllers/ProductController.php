@@ -61,6 +61,7 @@ class ProductController extends Controller
                 'products.*',
                 'users.nama as seller_nama',
                 'seller_profiles.nama_usaha',
+                'seller_profiles.alamat as seller_alamat',
                 DB::raw('GROUP_CONCAT(categories.nama_kategori) as categories')
             );
 
@@ -76,6 +77,10 @@ class ProductController extends Controller
         }
         if ($request->has('seller')) {
             $query->where('users.id_user', (int)$request->query('seller'));
+        }
+        if ($request->has('location')) {
+            $location = $request->query('location');
+            $query->where('seller_profiles.alamat', 'like', '%' . $location . '%');
         }
         if ($request->has('status')) {
             $query->where('products.status', $request->query('status'));
@@ -104,6 +109,7 @@ class ProductController extends Controller
                 'users.nama as seller_nama',
                 'users.id_user as seller_id',
                 'seller_profiles.nama_usaha',
+                'seller_profiles.alamat as seller_alamat',
                 'seller_profiles.rating as seller_rating',
                 DB::raw('GROUP_CONCAT(categories.nama_kategori) as categories')
             )
@@ -589,8 +595,46 @@ class ProductController extends Controller
         if (!$user) {
             return response()->json(['error' => 'Seller only'], 401);
         }
+        $profile = DB::table('seller_profiles')->where('id_user', $user->id_user)->first();
+        if (!$profile) {
+            return response()->json(['error' => 'No seller profile'], 400);
+        }
+        $product = DB::table('products')->where('id_product', $id)->first();
+        if (!$product) {
+            return response()->json(['error' => 'Produk tidak ditemukan'], 404);
+        }
+        if ((int)$product->id_seller !== (int)$profile->id_seller) {
+            return response()->json(['error' => 'Bukan produk Anda'], 403);
+        }
+        
+        // Delete child records that reference this product
+        DB::table('order_items')->where('id_product', $id)->delete();
+        DB::table('product_categories')->where('id_product', $id)->delete();
+        DB::table('product_documents')->where('id_product', $id)->delete();
+        DB::table('reviews')->where('id_product', $id)->delete();
         DB::table('products')->where('id_product', $id)->delete();
+        
         return response()->json(['success' => true]);
+    }
+
+    public function toggleStatus(Request $request, $id)
+    {
+        $user = $this->requireRole('seller');
+        if (!$user) return response()->json(['error' => 'Seller only'], 401);
+        $p = DB::table('products')->where('id_product', $id)->first();
+        if (!$p) return response()->json(['error' => 'Produk tidak ditemukan'], 404);
+        if ((int)$p->id_seller !== (int)$user->id_user) {
+            return response()->json(['error' => 'Bukan produk Anda'], 403);
+        }
+        // Sellers can only toggle between active<->draft, and only for previously approved products.
+        // Rejected products must be edited (resubmitted) rather than manually reactivated.
+        $map = ['active' => 'draft', 'draft' => 'active'];
+        if (!isset($map[$p->status])) {
+            return response()->json(['error' => 'Status ' . $p->status . ' tidak bisa diubah manual. Silakan edit produk untuk resubmit.'], 422);
+        }
+        $next = $map[$p->status];
+        DB::table('products')->where('id_product', $id)->update(['status' => $next]);
+        return response()->json(['success' => true, 'status' => $next]);
     }
 
     public function approve(Request $request, $id)

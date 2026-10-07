@@ -219,12 +219,8 @@
         <div id="page-dashboard" class="page">
             <div class="dashboard-layout">
                 <div class="dashboard-sidebar">
-                    <div class="sidebar-section">
-                        <h3>Seller</h3>
-                        <a href="#" onclick="showDashboardTab('products')" class="active"><i class="fas fa-box"></i> Produk Saya</a>
-                        <a href="#" onclick="showDashboardTab('orders')" ><i class="fas fa-shopping-bag"></i> Order Saya</a>
-                        <a href="#" onclick="showDashboardTab('messages')"><i class="fas fa-comments"></i> Pesan</a>
-                        <a href="#" onclick="showDashboardTab('settings')"><i class="fas fa-cog"></i> Pengaturan</a>
+                    <div class="sidebar-section" id="dashboardSidebar">
+                        <!-- Populated by JS so tabs are role-aware (seller vs buyer). -->
                     </div>
                 </div>
                 <div class="dashboard-content" id="dashboardContent">
@@ -301,11 +297,26 @@
                     <span id="chatContactName"></span>
                 </div>
                 <div class="chat-messages" id="chatMessages"></div>
+                <div id="chatFilePreview" style="display:none;margin:8px 12px;max-height:120px;overflow-y:auto"></div>
                 <div class="chat-input-area">
+                    <label class="btn-icon" style="display:flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:50%;background:var(--slate-100);border:none;color:var(--slate-500);cursor:pointer" title="Lampirkan file (dapat lebih dari 1)">
+                        <i class="fas fa-paperclip"></i>
+                        <input type="file" id="chatFileInput" multiple accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.csv" style="display:none" onchange="onChatFileSelect()">
+                    </label>
                     <input type="text" id="chatInput" placeholder="Ketik pesan..." onkeydown="if(event.key==='Enter')sendChat()">
                     <button onclick="sendChat()" class="btn-icon"><i class="fas fa-paper-plane"></i></button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Chat Files Modal (centered list of attachments for a message) -->
+    <div id="chatFilesModal" class="modal" style="display:none" onclick="if(event.target===this)closeChatFilesModal()">
+        <div class="modal-content chat-files-modal-content">
+            <button class="modal-close" onclick="closeChatFilesModal()"><i class="fas fa-times"></i></button>
+            <h3 id="chatFilesModalTitle">Files</h3>
+            <div id="chatFilesModalBody" class="chat-files-grid"></div>
+            <div id="chatFilesModalFooter" class="modal-actions"></div>
         </div>
     </div>
 
@@ -449,13 +460,26 @@
     <div id="toast" class="toast"></div>
 
     <!-- Logout Confirm Modal -->
-    <div id="logoutModal" class="modal" style="display:none">
+    <div id="confirmModal" class="modal" style="display:none">
         <div class="modal-content modal-sm">
-            <h3>Yakin keluar?</h3>
-            <p>Anda akan keluar dari sesi ini.</p>
+            <h3 id="confirmTitle" style="margin-bottom:8px"></h3>
+            <p id="confirmMsg" style="color:var(--slate-600);font-size:14px;line-height:1.5"></p>
             <div class="modal-actions">
-                <button class="btn btn-outline" onclick="closeModal('logoutModal')">Batal</button>
-                <button class="btn btn-danger" onclick="handleLogout()">Keluar</button>
+                <button id="confirmCancel" class="btn btn-outline">Batal</button>
+                <button id="confirmOk" class="btn btn-danger">Hapus</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="promptModal" class="modal" style="display:none">
+        <div class="modal-content">
+            <h3 id="promptTitle" style="margin-bottom:8px"></h3>
+            <p id="promptMsg" style="color:var(--slate-600);font-size:14px;margin-bottom:12px"></p>
+            <input type="text" id="promptInput" placeholder="Masukkan nilai..." style="width:100%;padding:10px 14px;border:1px solid var(--slate-300);border-radius:8px;font-size:14px;margin-bottom:8px">
+            <textarea id="promptTextarea" rows="3" placeholder="Opsional..." style="width:100%;padding:10px 14px;border:1px solid var(--slate-300);border-radius:8px;font-size:14px;resize:vertical;display:none"></textarea>
+            <div class="modal-actions">
+                <button id="promptCancel" class="btn btn-outline">Batal</button>
+                <button id="promptOk" class="btn btn-primary">OK</button>
             </div>
         </div>
     </div>
@@ -475,11 +499,26 @@
             <button class="modal-close" onclick="closeModal('disputeModal')"><i class="fas fa-times"></i></button>
             <h3 id="disputeModalTitle">Dispute Order</h3>
             <div id="disputeChatContent" style="flex:1;overflow-y:auto;padding:16px;background:var(--slate-50);border-radius:8px;margin:16px 0"></div>
-            <div id="disputeChatInput" style="display:flex;gap:8px;margin-bottom:8px">
-                <input type="text" id="disputeMessageInput" placeholder="Tulis pesan..." style="flex:1;padding:10px;border:1px solid var(--slate-300);border-radius:8px">
+            <div id="disputeFilePreview" style="display:none;margin:8px 12px 0 12px;max-height:120px;overflow-y:auto"></div>
+            <div id="disputeChatInput" style="display:flex;gap:8px;margin-bottom:8px;align-items:flex-end">
+                <label class="btn-icon" style="display:flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:50%;background:var(--slate-100);border:none;color:var(--slate-500);cursor:pointer" title="Lampirkan file (dapat lebih dari 1)">
+                    <i class="fas fa-paperclip"></i>
+                    <input type="file" id="disputeFileInput" multiple accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.csv" style="display:none" onchange="onDisputeFileSelect()">
+                </label>
+                <input type="text" id="disputeMessageInput" placeholder="Tulis pesan..." style="flex:1;padding:10px;border:1px solid var(--slate-300);border-radius:8px" onkeypress="if(event.key==='Enter')sendDisputeMessage()">
                 <button class="btn btn-primary" onclick="sendDisputeMessage()">Kirim</button>
             </div>
             <button id="disputeResolveBtn" class="btn btn-success" style="display:none;width:100%" onclick="resolveDispute(currentDisputeId)"><i class="fas fa-check"></i> Resolve Dispute</button>
+        </div>
+    </div>
+
+    <!-- Dispute Files Modal (centered list of attachments for a message) -->
+    <div id="disputeFilesModal" class="modal" style="display:none" onclick="if(event.target===this)closeDisputeFilesModal()">
+        <div class="modal-content chat-files-modal-content">
+            <button class="modal-close" onclick="closeDisputeFilesModal()"><i class="fas fa-times"></i></button>
+            <h3 id="disputeFilesModalTitle">Files</h3>
+            <div id="disputeFilesModalBody" class="chat-files-grid"></div>
+            <div id="disputeFilesModalFooter" class="modal-actions"></div>
         </div>
     </div>
 

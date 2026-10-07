@@ -9,7 +9,9 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->string('avatar_url', 255)->nullable()->after('status_verifikasi');
+            if (!Schema::hasColumn('users', 'avatar_url')) {
+                $table->string('avatar_url', 255)->nullable()->after('status_verifikasi');
+            }
         });
     }
 
