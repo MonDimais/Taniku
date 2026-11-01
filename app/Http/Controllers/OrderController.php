@@ -134,21 +134,29 @@ class OrderController extends Controller
             return response()->json(['error' => 'Buyer only'], 401);
         }
         $data = $request->json()->all();
+        if (empty($data['items']) || !is_array($data['items'])) {
+            return response()->json(['error' => 'Keranjang kosong'], 422);
+        }
         $total = 0;
         $itemData = [];
         foreach ($data['items'] as $item) {
+            // Quantity must be a positive integer — reject 0/negative/manipulated values.
+            $qty = (int)($item['quantity'] ?? 0);
+            if ($qty < 1) {
+                return response()->json(['error' => 'Jumlah produk harus minimal 1'], 422);
+            }
             $p = DB::table('products')
                 ->where('id_product', $item['id_product'])
-                ->where('stok', '>=', $item['quantity'])
+                ->where('stok', '>=', $qty)
                 ->first();
             if (!$p) {
                 return response()->json(['error' => 'Produk ' . $item['id_product'] . ' stok tidak mencukupi'], 400);
             }
-            $subtotal = (float)$p->harga * $item['quantity'];
+            $subtotal = (float)$p->harga * $qty;
             $total += $subtotal;
-            $itemData[] = [$item['id_product'], $item['quantity'], (float)$p->harga, $subtotal];
+            $itemData[] = [$item['id_product'], $qty, (float)$p->harga, $subtotal];
             DB::table('products')->where('id_product', $item['id_product'])->update([
-                'stok' => DB::raw('stok - ' . (int)$item['quantity']),
+                'stok' => DB::raw('stok - ' . $qty),
             ]);
         }
         $sellerUser = DB::table('products')

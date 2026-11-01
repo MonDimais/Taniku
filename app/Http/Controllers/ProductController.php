@@ -505,12 +505,24 @@ class ProductController extends Controller
         if (!$profile) {
             return response()->json(['error' => 'No seller profile'], 400);
         }
+        // Manual input validation: nama wajib, harga > 0, stok >= 0.
+        if (empty(trim($data['nama_produk'] ?? ''))) {
+            return response()->json(['error' => 'Nama produk wajib diisi'], 422);
+        }
+        $harga = (float)($data['harga'] ?? 0);
+        if ($harga <= 0) {
+            return response()->json(['error' => 'Harga harus lebih dari 0'], 422);
+        }
+        $stok = (int)($data['stok'] ?? 0);
+        if ($stok < 0) {
+            return response()->json(['error' => 'Stok tidak boleh negatif'], 422);
+        }
         $pid = DB::table('products')->insertGetId([
             'id_seller' => $profile->id_seller,
             'nama_produk' => $data['nama_produk'],
             'deskripsi' => $data['deskripsi'] ?? '',
-            'harga' => (float)$data['harga'],
-            'stok' => (int)$data['stok'],
+            'harga' => $harga,
+            'stok' => $stok,
             'satuan' => $data['satuan'] ?? 'pcs',
             'status' => 'pending',
             'foto' => $data['foto'] ?? '',
@@ -552,6 +564,20 @@ class ProductController extends Controller
         }
         $data = $request->all();
 
+        // Manual input validation (same as store): nama wajib, harga > 0, stok >= 0.
+        $nama = trim($data['nama_produk'] ?? $product->nama_produk);
+        if ($nama === '') {
+            return response()->json(['error' => 'Nama produk wajib diisi'], 422);
+        }
+        $harga = (float)($data['harga'] ?? $product->harga);
+        if ($harga <= 0) {
+            return response()->json(['error' => 'Harga harus lebih dari 0'], 422);
+        }
+        $stok = (int)($data['stok'] ?? $product->stok);
+        if ($stok < 0) {
+            return response()->json(['error' => 'Stok tidak boleh negatif'], 422);
+        }
+
         // Seller cannot control status directly.
         // Rejected products become 'pending' again when seller edits them (re-submission).
         $oldStatus = $product->status;
@@ -564,10 +590,10 @@ class ProductController extends Controller
             ->where('id_product', $id)
             ->where('id_seller', $profile->id_seller)
             ->update([
-                'nama_produk' => $data['nama_produk'] ?? $product->nama_produk,
+                'nama_produk' => $nama,
                 'deskripsi' => $data['deskripsi'] ?? $product->deskripsi,
-                'harga' => (float)($data['harga'] ?? $product->harga),
-                'stok' => (int)($data['stok'] ?? $product->stok),
+                'harga' => $harga,
+                'stok' => $stok,
                 'satuan' => $data['satuan'] ?? $product->satuan,
                 'grade' => $data['grade'] ?? $product->grade,
                 'status' => $newStatus,

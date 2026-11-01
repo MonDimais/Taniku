@@ -237,6 +237,13 @@ class MessageController extends Controller
         if (!$sellerId || !$pesan) {
             return response()->json(['error' => 'seller_id dan pesan wajib diisi'], 422);
         }
+        if (!$productId) {
+            return response()->json(['error' => 'Produk wajib dipilih'], 422);
+        }
+        // Harga nego harus angka positif wajar — mencegah order Rp0/negatif dari input manual.
+        if ($harga <= 0) {
+            return response()->json(['error' => 'Harga nego harus lebih dari 0'], 422);
+        }
 
         $p = DB::table('products')->where('id_product', $productId)->first();
         if ($p) {
@@ -301,6 +308,19 @@ class MessageController extends Controller
         if ($msgId < 1 || $idProduct < 1 || $buyerId < 1) {
             return response()->json(['error' => 'Data tidak valid'], 422);
         }
+        // Harga hasil nego harus positif — mencegah order Rp0/negatif masuk ke buyer.
+        if ($harga <= 0) {
+            return response()->json(['error' => 'Harga nego harus lebih dari 0'], 422);
+        }
+
+        // Produk harus masih ada & tersedia (stok > 0) saat seller accept.
+        $product = DB::table('products')->where('id_product', $idProduct)->first();
+        if (!$product) {
+            return response()->json(['error' => 'Produk tidak ditemukan'], 404);
+        }
+        if ((int)$product->stok < 1) {
+            return response()->json(['error' => 'Stok produk habis, nego tidak bisa diterima'], 422);
+        }
 
         DB::table('messages')->where('id_message', $msgId)->update(['read_at' => now()]);
 
@@ -311,6 +331,21 @@ class MessageController extends Controller
             'total_amount' => $harga,
             'status_order' => 'pending',
             'alamat_pengiriman' => 'Akan diisi saat checkout',
+        ]);
+
+        // Create the order_items row (qty 1) — WITHOUT this the buyer sees an
+        // empty order with no items and Rp0 total. OrderController does the same.
+        DB::table('order_items')->insert([
+            'id_order' => $orderId,
+            'id_product' => $idProduct,
+            'quantity' => 1,
+            'harga_satuan' => $harga,
+            'subtotal' => $harga,
+        ]);
+
+        // Deduct stock like a normal checkout.
+        DB::table('products')->where('id_product', $idProduct)->update([
+            'stok' => DB::raw('stok - 1'),
         ]);
 
         // Create the escrow row for this negotiated order. Without it, the
@@ -372,6 +407,10 @@ class MessageController extends Controller
 
         if ($msgId < 1 || $idProduct < 1 || $buyerId < 1) {
             return response()->json(['error' => 'Data tidak valid'], 422);
+        }
+        // Harga banding harus positif — input manual "Bandingkan Harga" bisa 0/negatif.
+        if ($harga <= 0) {
+            return response()->json(['error' => 'Harga banding harus lebih dari 0'], 422);
         }
 
         DB::table('messages')->where('id_message', $msgId)->update(['read_at' => now()]);

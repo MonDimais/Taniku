@@ -1417,16 +1417,23 @@ async function handleProductSubmit(e) {
     e.preventDefault();
     const id = document.getElementById('productId').value;
     const checked = document.querySelector('#prodCategories input[type=radio]:checked');
+    // Manual input validation: nama wajib, harga > 0, stok >= 0.
+    const namaProd = document.getElementById('prodNama').value.trim();
+    if (!namaProd) { showToast('Nama produk wajib diisi', 'error'); return; }
+    const hargaVal = parseInt(document.getElementById('prodHarga').value, 10) || 0;
+    if (hargaVal <= 0) { showToast('Harga harus lebih dari 0', 'error'); return; }
+    const stokVal = parseInt(document.getElementById('prodStok').value, 10) || 0;
+    if (stokVal < 0) { showToast('Stok tidak boleh negatif', 'error'); return; }
     const formData = new FormData();
     // Append foto produk (main image) first
     const fotoInput = document.getElementById('prodFoto');
     if (fotoInput && fotoInput.files && fotoInput.files.length) {
         formData.append('foto', fotoInput.files[0]);
     }
-    formData.append('nama_produk', document.getElementById('prodNama').value);
+    formData.append('nama_produk', namaProd);
     formData.append('deskripsi', document.getElementById('prodDeskripsi').value);
-    formData.append('harga', document.getElementById('prodHarga').value);
-    formData.append('stok', document.getElementById('prodStok').value);
+    formData.append('harga', hargaVal);
+    formData.append('stok', stokVal);
     formData.append('satuan', document.getElementById('prodSatuan').value);
     // Single-select category: send only the one radio that is checked (or omit).
     if (checked) formData.append('category', +checked.value);
@@ -1613,6 +1620,8 @@ async function negoProduct(productId, sellerId) {
     const harga = document.getElementById('negoOffer').value;
     const pesan = document.getElementById('negoMsg').value.trim();
     if (!pesan) { showToast('Tulis pesan dulu', 'error'); return; }
+    const hargaInt = parseInt(harga, 10) || 0;
+    if (hargaInt <= 0) { showToast('Harga nego harus lebih dari 0', 'error'); return; }
     // Fetch product info for the message
     const p = await api('/api/products/' + productId);
     const prodName = p.nama_produk || 'Produk';
@@ -1622,7 +1631,7 @@ async function negoProduct(productId, sellerId) {
         method: 'POST',
         body: JSON.stringify({
             id_product: productId, seller_id: sellerId,
-            harga: parseInt(harga)||0, pesan,
+            harga: hargaInt, pesan,
             nama_produk: prodName, harga_produk: prodPrice,
             foto_produk: prodImg
         })
@@ -3047,6 +3056,11 @@ async function counterNego(messageId, productId, originalHarga) {
             showToast('Harga wajib diisi', 'error');
             return;
         }
+        const hargaInt = parseInt(newHarga, 10) || 0;
+        if (hargaInt <= 0) {
+            showToast('Harga banding harus lebih dari 0', 'error');
+            return;
+        }
         api('/api/messages/negotiation/counter', {
             method: 'POST',
             body: JSON.stringify({
@@ -3054,7 +3068,7 @@ async function counterNego(messageId, productId, originalHarga) {
                 id_product: productId,
                 seller_id: currentUser.id_user,
                 buyer_id: currentChatUser.id,
-                harga: parseInt(newHarga)||0,
+                harga: hargaInt,
                 nama_produk: '',
                 foto_produk: ''
             })
