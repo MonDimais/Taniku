@@ -141,11 +141,13 @@ class MessageController extends Controller
 
         // pesan: support both JSON and FormData (multipart when file attached)
         // IMPORTANT: do not read the JSON body stream on multipart requests.
+        // InputBag::input() does not exist; $request->input() merges JSON + form fields safely.
         $pesan = trim($request->input('pesan') ?? '');
         if ($pesan === '' && ($request->header('Content-Type') ?? '') !== '') {
             $ct = $request->header('Content-Type');
             if (stripos($ct, 'application/json') !== false) {
-                $pesan = trim($request->json()->input('pesan') ?? '');
+                $json = $request->json()->all();
+                $pesan = trim($json['pesan'] ?? '');
             }
         }
 

@@ -62,7 +62,9 @@ class ProductController extends Controller
                 'users.nama as seller_nama',
                 'seller_profiles.nama_usaha',
                 'seller_profiles.alamat as seller_alamat',
-                DB::raw('GROUP_CONCAT(categories.nama_kategori) as categories')
+                DB::raw('GROUP_CONCAT(categories.nama_kategori) as categories'),
+                DB::raw('(SELECT ROUND(AVG(rating), 2) FROM reviews WHERE id_product = products.id_product) as avg_rating'),
+                DB::raw('(SELECT COUNT(*) FROM reviews WHERE id_product = products.id_product) as review_count')
             );
 
         if ($request->has('category')) {

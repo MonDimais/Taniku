@@ -531,6 +531,31 @@
         </div>
     </div>
 
+    <!-- Rating Modal (buyer rates multiple products from an order) -->
+    <div id="ratingModal" class="modal" style="display:none" onclick="if(event.target===this)closeModal('ratingModal')">
+        <div class="modal-content rating-modal-content">
+            <button class="modal-close" onclick="closeModal('ratingModal')"><i class="fas fa-times"></i></button>
+            <h3 id="ratingModalTitle"><i class="fas fa-star" style="color:var(--yellow-500)"></i> Beri Rating</h3>
+            <div id="ratingModalProducts"></div>
+            <div class="rating-stars-wrap">
+                <div id="ratingStars" class="stars stars-input" onclick="setRating(event)">
+                    <i class="fas fa-star" data-v="1" onclick="event.stopPropagation();setRating(event)"></i>
+                    <i class="fas fa-star" data-v="2" onclick="event.stopPropagation();setRating(event)"></i>
+                    <i class="fas fa-star" data-v="3" onclick="event.stopPropagation();setRating(event)"></i>
+                    <i class="fas fa-star" data-v="4" onclick="event.stopPropagation();setRating(event)"></i>
+                    <i class="fas fa-star" data-v="5" onclick="event.stopPropagation();setRating(event)"></i>
+                </div>
+                <div id="ratingLabel" class="rating-label">Pilih rating</div>
+            </div>
+            <textarea id="ratingComment" rows="3" maxlength="500" placeholder="Tulis ulasan Anda (opsional)..." class="rating-textarea"></textarea>
+            <div class="rating-hint"><span id="ratingCommentCount">0</span>/500 karakter</div>
+            <div class="rating-actions">
+                <button class="btn btn-outline" onclick="closeModal('ratingModal')">Batal</button>
+                <button class="btn btn-primary" id="ratingSubmitBtn" onclick="submitRating()">Kirim Rating</button>
+            </div>
+        </div>
+    </div>
+
     <script src="<?php echo e(asset("js/app.js")); ?>"></script>
 </body>
 </html><?php /**PATH C:\Users\Rafa\Downloads\taniku-laravel-latest\taniku-laravel\resources\views/welcome.blade.php ENDPATH**/ ?>

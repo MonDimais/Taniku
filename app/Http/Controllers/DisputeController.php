@@ -59,6 +59,35 @@ class DisputeController extends Controller
         return response()->json($disputes);
     }
 
+    // Admin/buyer/seller detail - returns dispute + order + total fund for the resolve modal.
+    public function detail($id) {
+        $user = $this->requireLogin();
+        if (!$user) return response()->json(['error' => 'Not authorized'], 401);
+        $dispute = DB::table('disputes')->where('id_dispute', $id)->first();
+        if (!$dispute) return response()->json(['error' => 'Dispute not found'], 404);
+        $order = DB::table('orders')->where('id_order', $dispute->id_order)->first();
+        $isParticipant = ($order->id_buyer == $user->id_user || $order->id_seller == $user->id_user);
+        if ($user->id_role != 1 && !$isParticipant) {
+            return response()->json(['error' => 'Not authorized'], 403);
+        }
+        $escrow = DB::table('payments_escrow')->where('id_order', $order->id_order)->first();
+        $totalFund = (int)($escrow->jumlah ?? $order->total_amount ?? 0);
+        $buyer = DB::table('users')->where('id_user', $order->id_buyer)->first(['id_user', 'nama', 'email']);
+        $seller = DB::table('users')->where('id_user', $order->id_seller)->first(['id_user', 'nama', 'email']);
+        return response()->json([
+            'id_dispute' => $dispute->id_dispute,
+            'id_order' => $order->id_order,
+            'status' => $dispute->status,
+            'alasan' => $dispute->alasan,
+            'deskripsi' => $dispute->deskripsi,
+            'opened_at' => null,
+            'total_fund' => $totalFund,
+            'order_status' => $order->status_order,
+            'buyer' => $buyer,
+            'seller' => $seller,
+        ]);
+    }
+
     public function store(Request $request)
     {
         $user = $this->requireRole('buyer');
@@ -212,7 +241,8 @@ class DisputeController extends Controller
         if ($pesan === '' && ($request->header('Content-Type') ?? '') !== '') {
             $ct = $request->header('Content-Type');
             if (stripos($ct, 'application/json') !== false) {
-                $pesan = trim($request->json()->input('pesan') ?? '');
+                $json = $request->json()->all();
+                $pesan = trim($json['pesan'] ?? '');
             }
         }
         if (empty($pesan) && empty($attachments)) {
@@ -320,6 +350,21 @@ class DisputeController extends Controller
         $amount = (float)($data['amount'] ?? 0);
         $desc = $data['deskripsi'] ?? '';
         $order = DB::table('orders')->where('id_order', $dispute->id_order)->first();
+        $escrow = DB::table('payments_escrow')->where('id_order', $dispute->id_order)->first();
+        $totalFund = (int)($escrow->jumlah ?? $order->total_amount ?? 0);
+
+        # Validation: amount must be a positive number not exceeding the held fund.
+        if ($resolution === 'partial_release') {
+            if ($amount <= 0) {
+                return response()->json(['error' => 'Jumlah partial release harus lebih dari 0'], 422);
+            }
+            if ($amount >= $totalFund) {
+                return response()->json(['error' => 'Jumlah partial release harus kurang dari total dana Rp' . number_format($totalFund, 0, ',', '.')], 422);
+            }
+            if ($amount > $totalFund) {
+                return response()->json(['error' => 'Jumlah melebihi total dana yang dipegang escrow'], 422);
+            }
+        }
 
         DB::table('disputes')->where('id_dispute', $id)->update([
             'status' => 'resolved',
@@ -359,13 +404,17 @@ class DisputeController extends Controller
                 'status_order' => 'confirmed',
                 'dispute_resolution' => 'partial_release',
             ]);
-            // Partial release - release to seller, note partial
+            // Partial release - release $amount to seller, refund the remainder to buyer.
             DB::table('payments_escrow')->where('id_order', $dispute->id_order)->update([
                 'status_escrow' => 'partial_released',
                 'released_at' => now(),
             ]);
-            $this->sendNotif($order->id_seller, 'escrow_released', "Partial release untuk Order #{$dispute->id_order}: Rp{$amount} dirilis ke Anda.", $dispute->id_order);
-            $this->sendNotif($order->id_buyer, 'dispute_resolved', "Dispute Order #{$dispute->id_order}: partial release, sisa dana di-refund.", $dispute->id_order);
+            # Seller gets the released amount as income.
+            DB::table('users')->where('id_user', $order->id_seller)->update([
+                'pendapatan' => DB::raw('pendapatan + ' . (float)$amount),
+            ]);
+            $this->sendNotif($order->id_seller, 'escrow_released', "Partial release untuk Order #{$dispute->id_order}: Rp" . number_format($amount, 0, ',', '.') . " dirilis ke Anda.", $dispute->id_order);
+            $this->sendNotif($order->id_buyer, 'dispute_resolved', "Dispute Order #{$dispute->id_order}: Rp" . number_format($totalFund - $amount, 0, ',', '.') . " di-refund ke Anda.", $dispute->id_order);
         } else {
             // full_release
             DB::table('orders')->where('id_order', $dispute->id_order)->update([

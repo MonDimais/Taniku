@@ -94,6 +94,10 @@ async function checkAuth() {
             if (data.user) {
                 currentUser = data.user;
                 updateUIForUser();
+                // Populate notif/chat badges immediately after session restore
+                // so the buttons don't appear empty before the first poll tick.
+                updateNotifCount();
+                updateChatBadge();
             }
         }
     } catch (e) {}
@@ -577,7 +581,7 @@ function productCardHTML(p) {
             <div class="product-price">Rp${(p.harga||0).toLocaleString()} <small>/${p.satuan||'pcs'}</small></div>
             <div class="product-footer">
                 <span class="product-stock"><i class="fas fa-box"></i> ${p.stok} ${p.satuan||'pcs'}</span>
-                ${p.seller_rating ? `<span class="product-rating"><i class="fas fa-star"></i> ${parseFloat(p.seller_rating).toFixed(1)}</span>` : ''}
+                ${p.avg_rating ? `<span class="product-rating">${renderStars(p.avg_rating, {count: p.review_count||0})}</span>` : ''}
             </div>
             <button class="btn btn-primary btn-block btn-sm" onclick="event.stopPropagation();buyNow(${p.id_product})" style="margin-top:8px">
                 <i class="fas fa-cart-plus"></i> Beli Langsung
@@ -604,7 +608,7 @@ async function showProduct(id) {
                 <span><i class="fas fa-store"></i> ${p.seller_nama||'Petani'} (${p.nama_usaha||''})</span>
                 ${location ? `<span><i class="fas fa-location-dot"></i> ${location}</span>` : ''}
                 <span><i class="fas fa-box"></i> Stok: ${p.stok} ${p.satuan||'pcs'}</span>
-                ${p.seller_rating ? `<span><i class="fas fa-star" style="color:var(--yellow-500)"></i> ${parseFloat(p.seller_rating).toFixed(1)}</span>` : ''}
+                ${p.avg_rating ? `<span>${renderStars(p.avg_rating, {count: p.review_count||0})}</span>` : ''}
                 ${p.grade ? `<span><i class="fas fa-award"></i> Grade ${p.grade}</span>` : ''}
             </div>
             <span class="status-badge status-${p.status}">${p.status}</span>
@@ -634,8 +638,17 @@ async function showProduct(id) {
                     </button>
                 </div>
             ` : ''}
-        </div>`;
+        </div>
+    </div>
+    <div class="review-section">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h4 style="margin:0"><i class="fas fa-star" style="color:var(--yellow-500)"></i> Ulasan Pembeli</h4>
+        </div>
+        <div id="productReviewsContainer"></div>
+    </div>
+    `;
     document.getElementById('productModal').style.display = 'flex';
+    loadProductReviews(p.id_product, 'productReviewsContainer');
 }
 
 // ===== CART =====
@@ -1290,39 +1303,61 @@ async function confirmShip(orderId) {
 
 async function loadBuyerOrders(el) {
     const orders = await api('/api/orders');
+    // Pre-load the buyer's existing reviews so we can show/hide per-item
+    // rating buttons without a race condition in the async render path.
+    const ratedSet = new Set((await ensureMyReviews()).map(r => (r.id_order||0) + ':' + r.id_product));
+    const ratedMap = new Map((await ensureMyReviews()).map(r => [ (r.id_order||0) + ':' + r.id_product, r ]));
     el.innerHTML = `<h3 style="margin-bottom:16px">Order Saya</h3>
     <div class="buyer-order-grid">
-        ${orders.map(o => `
-        <div class="buyer-order-card" onclick="showOrderDetail(${o.id_order})">
-            <div class="buyer-order-head">
-                <span class="order-id">Order #${o.id_order}</span>
-                <span class="order-date">${o.tanggal_order?.slice(0,10)||''}</span>
-            </div>
-            <div class="buyer-order-items">
-                ${(o.items||[]).map(i => `
-                <div class="buyer-order-item">
-                    <img src="${i.foto||'https://via.placeholder.com/60'}" alt="${i.nama_produk}" class="item-img" onerror="this.src='https://via.placeholder.com/60?text=No+Img'">
-                    <div class="item-info">
-                        <div class="item-name">${i.nama_produk}</div>
-                        <div class="item-meta">
-                            <span class="item-qty">${i.quantity||1} ${i.satuan||'pcs'}</span>
-                            <span class="item-price">Rp${((i.subtotal||i.harga||0)).toLocaleString()}</span>
-                        </div>
+        ${orders.map(o => {
+            const items = o.items || [];
+            const isRatableStatus = ['confirmed','completed'].includes(o.status_order);
+            const itemsHtml = items.map(i => `<div class="buyer-order-item ${isRatableStatus ? 'ratable' : ''}">
+                <img src="${i.foto||'https://via.placeholder.com/60'}" alt="${i.nama_produk}" class="item-img" onerror="this.src='https://via.placeholder.com/60?text=No+Img'">
+                <div class="item-info">
+                    <div class="item-name">${i.nama_produk}</div>
+                    <div class="item-meta">
+                        <span class="item-qty">×${i.quantity||1}</span>
+                        <span class="item-unit">${i.satuan||'pcs'}</span>
+                        <span class="item-price">Rp${((i.subtotal||i.harga||0)).toLocaleString()}</span>
                     </div>
-                </div>`).join('') || '<div class="buyer-order-empty" style="padding:20px;text-align:center;color:var(--slate-400);font-size:13px">Tidak ada item</div>'}
-            </div>
-            <div class="buyer-order-total">
-                <span class="total-label">Total</span>
-                <span class="total-amount">Rp${(o.total_amount||0).toLocaleString()}</span>
-            </div>
-            <div class="buyer-order-actions">
-                ${o.status_order==='pending' ? `<button class="btn btn-action-primary" onclick="event.stopPropagation();payOrder(${o.id_order})"><i class="fas fa-credit-card"></i> Bayar</button>` : ''}
-                ${o.tracking_number && o.status_order==='shipped' ? `<button class="btn btn-action-info" title="Tracking" onclick="event.stopPropagation();showTracking(${o.id_order})"><i class="fas fa-truck"></i></button>` : ''}
-                ${o.status_order==='shipped' ? `<button class="btn btn-action-success" onclick="event.stopPropagation();updateOrderStatus(${o.id_order},'confirmed')"><i class="fas fa-check"></i> Sudah Diterima</button>` : ''}
-                ${o.status_order==='confirmed' ? `<button class="btn btn-action-danger" onclick="event.stopPropagation();openDispute(${o.id_order})"><i class="fas fa-flag"></i> Ajukan Dispute</button>` : ''}
-                ${o.status_order==='disputed' ? `<button class="btn btn-action-warning" onclick="event.stopPropagation();openDisputeChat(${o.id_order})"><i class="fas fa-comments"></i> Lihat Dispute</button>` : ''}
-            </div>
-        </div>`).join('') || '<div class="buyer-order-empty"><i class="fas fa-box"></i><h3>Belum ada order</h3><p>Belanja produk dari seller di Taniku</p></div>'}
+                </div>
+            </div>`).join('');
+            // Single rating button per order. Filters to unrated products in the popup.
+            let ratedCount = 0;
+            items.forEach(i => { if (ratedSet.has(o.id_order + ':' + i.id_product)) ratedCount++; });
+            const unratedCount = items.length - ratedCount;
+            let ratingHtml = '';
+            if (isRatableStatus && items.length > 0) {
+                if (unratedCount > 0) {
+                    const label = unratedCount === items.length ? '' : ` <span class="rating-remaining">${unratedCount}/${items.length} tersisa</span>`;
+                    ratingHtml = `<button class="order-rating-btn" onclick="event.stopPropagation();openRating(${o.id_order})" title="Beri rating untuk ${unratedCount} produk yang belum dirating"><i class="fas fa-star"></i> Rating${label}</button>`;
+                } else {
+                    ratingHtml = `<span class="order-rating-all-done" title="Semua produk pada order ini sudah dirating"><i class="fas fa-check-circle"></i> Semua Dirating</span>`;
+                }
+            }
+            return `<div class="buyer-order-card" onclick="showOrderDetail(${o.id_order})">
+                <div class="buyer-order-head">
+                    <span class="order-id">Order #${o.id_order}</span>
+                    <span class="order-date">${o.tanggal_order?.slice(0,10)||''}</span>
+                </div>
+                <div class="buyer-order-items">
+                    ${itemsHtml || '<div class="buyer-order-empty" style="padding:20px;text-align:center;color:var(--slate-400);font-size:13px">Tidak ada item</div>'}
+                </div>
+                ${ratingHtml ? `<div class="buyer-order-rating-row">${ratingHtml}</div>` : ''}
+                <div class="buyer-order-total">
+                    <span class="total-label">Total</span>
+                    <span class="total-amount">Rp${(o.total_amount||0).toLocaleString()}</span>
+                </div>
+                <div class="buyer-order-actions">
+                    ${o.status_order==='pending' ? `<button class="btn btn-action-primary" onclick="event.stopPropagation();payOrder(${o.id_order})"><i class="fas fa-credit-card"></i> Bayar</button>` : ''}
+                    ${o.tracking_number && o.status_order==='shipped' ? `<button class="btn btn-action-info" title="Tracking" onclick="event.stopPropagation();showTracking(${o.id_order})"><i class="fas fa-truck"></i></button>` : ''}
+                    ${o.status_order==='shipped' ? `<button class="btn btn-action-success" onclick="event.stopPropagation();updateOrderStatus(${o.id_order},'confirmed')"><i class="fas fa-check"></i> Sudah Diterima</button>` : ''}
+                    ${o.status_order==='confirmed' ? `<button class="btn btn-action-danger" onclick="event.stopPropagation();openDispute(${o.id_order})"><i class="fas fa-flag"></i> Ajukan Dispute</button>` : ''}
+                    ${o.status_order==='disputed' ? `<button class="btn btn-action-warning" onclick="event.stopPropagation();openDisputeChat(${o.id_order})"><i class="fas fa-comments"></i> Lihat Dispute</button>` : ''}
+                </div>
+            </div>`;
+        }).join('') || '<div class="buyer-order-empty"><i class="fas fa-box"></i><h3>Belum ada order</h3><p>Belanja produk dari seller di Taniku</p></div>'}
     </div>`;
 }
 
@@ -1841,6 +1876,31 @@ function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+function renderStars(avg, opts) {
+    opts = opts || {};
+    const count = opts.count || 0;
+    if (!avg || avg <= 0) {
+        return '<span style="font-size:11px;color:var(--slate-400)">Belum ada rating</span>';
+    }
+    const n = Math.round(avg * 2) / 2;
+    let html = '<span class="stars stars-readonly">';
+    for (let i = 1; i <= 5; i++) {
+        if (i <= Math.floor(n)) {
+            html += '<i class="fas fa-star star-on"></i>';
+        } else if (i - 0.5 <= n) {
+            html += '<i class="fas fa-star-half-alt star-on"></i>';
+        } else {
+            html += '<i class="fas fa-star"></i>';
+        }
+    }
+    html += '</span>';
+    html += ' <span style="font-size:11px;font-weight:700;color:var(--slate-600);margin-left:2px">' + avg.toFixed(1) + '</span>';
+    if (count > 0) {
+        html += ' <span style="font-size:10px;color:var(--slate-400)">(' + count + ')</span>';
+    }
+    return html;
+}
+
 // ===== DISPUTE FILES MODAL (centered list of attachments for a message) =====
 let disputeFilesMsgId = null;
 let disputeMsgsCache = [];
@@ -2256,55 +2316,258 @@ async function resolveDispute(id) {
     const title = document.getElementById('resolveModalTitle');
     const content = document.getElementById('resolveModalContent');
     title.textContent = 'Resolve Dispute #' + id;
-    
+
+    content.innerHTML = '<div style="padding:20px;text-align:center;color:var(--slate-400)"><i class="fas fa-spinner fa-spin"></i> Memuat detail dispute...</div>';
+    modal.style.display = 'flex';
+
+    const d = await api(`/api/disputes/${id}`);
+    if (!d || d.error || typeof d.total_fund === 'undefined') {
+        content.innerHTML = '<p style="color:var(--red-600)">Gagal memuat detail dispute.</p>';
+        return;
+    }
+    const total = Number(d.total_fund) || 0;
+    const totalStr = 'Rp' + total.toLocaleString();
+
     content.innerHTML = `
-        <p style="margin-bottom:16px;color:var(--slate-600)">Pilih resolusi untuk dispute ini:</p>
+        <div class="resolve-fund-card">
+            <div class="rfc-label"><i class="fas fa-lock"></i> Dana dalam Escrow</div>
+            <div class="rfc-amount">${totalStr}</div>
+            <div class="rfc-hint">Total dana yang dipegang platform untuk Order #${d.id_order || id}</div>
+        </div>
+        ${d.alasan ? `<div class="resolve-reason"><i class="fas fa-exclamation-triangle"></i> Alasan dispute: ${escapeHtml(d.alasan)}</div>` : ''}
         <div class="form-group">
             <label for="resolutionType">Jenis Resolusi</label>
-            <select id="resolutionType" style="width:100%;padding:10px 14px;border:1px solid var(--slate-300);border-radius:8px;font-size:14px">
-                <option value="refund">Refund penuh ke buyer</option>
-                <option value="partial_release">Partial release (sebagian ke seller)</option>
-                <option value="full_release">Full release (seluruhnya ke seller)</option>
+            <select id="resolutionType" class="resolve-input" onchange="onResolutionTypeChange()">
+                <option value="refund">Refund penuh ke buyer (${totalStr})</option>
+                <option value="partial_release">Partial release - sebagian ke seller, sisa ke buyer</option>
+                <option value="full_release">Full release - seluruh dana ke seller (${totalStr})</option>
             </select>
         </div>
-        <div class="form-group">
-            <label for="resolutionAmount">Jumlah (untuk partial refund)</label>
-            <input type="number" id="resolutionAmount" placeholder="0" style="width:100%;padding:10px 14px;border:1px solid var(--slate-300);border-radius:8px;font-size:14px">
+        <div id="resolutionAmountWrap" class="form-group" style="display:none">
+            <label>Jumlah untuk Seller</label>
+            <div class="resolve-mode-toggle" id="resolveModeToggle">
+                <button type="button" class="mode-btn active" data-mode="percent" onclick="switchAmountMode('percent')">% Persen</button>
+                <button type="button" class="mode-btn" data-mode="nominal" onclick="switchAmountMode('nominal')">Rp Nominal</button>
+            </div>
+            <div class="resolve-amount-row">
+                <input type="text" id="resolutionAmount" class="resolve-input" placeholder="0 - 100" inputmode="decimal" pattern="[0-9]*\.?[0-9]*">
+                <span class="resolve-amount-unit" id="resolveAmountUnit">%</span>
+            </div>
+            <div class="resolve-amount-preview-wrap">
+                <div class="resolve-preview-col">
+                    <div class="resolve-preview-label">Untuk Seller</div>
+                    <div class="resolve-preview-amount" id="resolveAmountPreview">Rp0</div>
+                </div>
+                <div class="resolve-preview-divider"></div>
+                <div class="resolve-preview-col">
+                    <div class="resolve-preview-label">Sisa untuk Buyer</div>
+                    <div class="resolve-preview-amount sisa" id="resolveAmountSisa">Rp${total.toLocaleString()}</div>
+                </div>
+            </div>
+            <div class="resolve-amount-error" id="resolveAmountError" style="display:none"></div>
         </div>
         <div class="form-group">
             <label for="resolutionDesc">Deskripsi (opsional)</label>
-            <textarea id="resolutionDesc" rows="3" placeholder="Keterangan resolusi..." style="width:100%;padding:10px 14px;border:1px solid var(--slate-300);border-radius:8px;font-size:14px"></textarea>
+            <textarea id="resolutionDesc" rows="3" class="resolve-input" placeholder="Keterangan resolusi..."></textarea>
         </div>
-        <div class="ship-actions">
+        <div class="resolve-actions">
             <button class="btn btn-secondary" onclick="closeModal('resolveModal')">Batal</button>
-            <button class="btn btn-primary" onclick="confirmResolve(${id})"><i class="fas fa-check"></i> Konfirmasi Resolusi</button>
+            <button class="btn btn-primary" id="resolveSubmitBtn" onclick="confirmResolve(${id}, ${total})"><i class="fas fa-check"></i> Konfirmasi Resolusi</button>
         </div>
     `;
-    
-    modal.style.display = 'flex';
+
+    // Track current mode (percent or nominal)
+    window._resolveMode = 'percent';
+    window._resolveTotal = total;
+
+    // Wire up amount preview
+    const amtInput = document.getElementById('resolutionAmount');
+    if (amtInput) {
+        amtInput.oninput = updateAmountPreview;
+        amtInput.onkeydown = (e) => {
+            // Block negative sign, letters, and special chars except decimal point
+            if (e.key === '-' || e.key === 'e' || e.key === 'E' || e.key === '+' || (e.key === '.' && amtInput.value.includes('.'))) {
+                e.preventDefault();
+            }
+        };
+    }
+    updateAmountPreview();
 }
 
-async function confirmResolve(disputeId) {
-    const resolution = document.getElementById('resolutionType')?.value;
-    const amount = parseInt(document.getElementById('resolutionAmount')?.value) || 0;
-    const deskripsi = document.getElementById('resolutionDesc')?.value || '';
-    
-    if (!resolution) {
-        showToast('Jenis resolusi wajib dipilih', 'error');
-        return;
+function switchAmountMode(mode) {
+    window._resolveMode = mode;
+    const btns = document.querySelectorAll('#resolveModeToggle .mode-btn');
+    btns.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+    const input = document.getElementById('resolutionAmount');
+    const unit = document.getElementById('resolveAmountUnit');
+    if (mode === 'percent') {
+        input.placeholder = '0 - 100';
+        unit.textContent = '%';
+    } else {
+        const total = window._resolveTotal || 0;
+        input.placeholder = '0 - ' + total;
+        unit.textContent = 'Rp';
     }
-    
+    updateAmountPreview();
+}
+
+function updateAmountPreview() {
+    const total = window._resolveTotal || 0;
+    const mode = window._resolveMode || 'percent';
+    const input = document.getElementById('resolutionAmount');
+    const preview = document.getElementById('resolveAmountPreview');
+    const sisa = document.getElementById('resolveAmountSisa');
+    const err = document.getElementById('resolveAmountError');
+    if (!input || !preview) return;
+
+    const raw = input.value.trim();
+    let sellerAmount = 0;
+    let valid = true;
+    let errMsg = '';
+
+    if (!raw) {
+        sellerAmount = 0;
+    } else {
+        const num = Number(raw);
+        if (isNaN(num) || num < 0) {
+            valid = false;
+            errMsg = 'Jumlah harus angka positif';
+        } else if (mode === 'percent') {
+            if (num <= 0) {
+                valid = false;
+                errMsg = 'Persen harus antara 1-99 (di luar 0 dan 100)';
+            } else if (num >= 100) {
+                valid = false;
+                errMsg = 'Persen harus antara 1-99 (pilih Full Release kalau mau 100%)';
+            } else {
+                sellerAmount = Math.floor(total * num / 100);
+                if (sellerAmount <= 0) {
+                    valid = false;
+                    errMsg = 'Persen terlalu kecil, minimal 1% dari total';
+                }
+            }
+        } else {
+            // nominal mode
+            if (num <= 0) {
+                valid = false;
+                errMsg = 'Jumlah harus lebih dari 0';
+            } else if (num >= total) {
+                valid = false;
+                errMsg = `Jumlah harus kurang dari total dana (Rp${total.toLocaleString()})`;
+            } else {
+                sellerAmount = Math.floor(num);
+            }
+        }
+    }
+
+    // Update UI
+    if (err) {
+        if (valid) {
+            err.style.display = 'none';
+            err.textContent = '';
+        } else {
+            err.style.display = 'block';
+            err.textContent = errMsg;
+        }
+    }
+
+    if (preview) {
+        preview.textContent = 'Rp' + sellerAmount.toLocaleString();
+    }
+    if (sisa) {
+        const buyerSisa = total - sellerAmount;
+        sisa.textContent = 'Rp' + Math.max(0, buyerSisa).toLocaleString();
+    }
+}
+
+function onResolutionTypeChange() {
+    const type = document.getElementById('resolutionType').value;
+    const wrap = document.getElementById('resolutionAmountWrap');
+    if (type === 'partial_release') {
+        wrap.style.display = 'block';
+    } else {
+        wrap.style.display = 'none';
+    }
+    const err = document.getElementById('resolveAmountError');
+    if (err) err.style.display = 'none';
+    // Reset mode to percent when switching to partial_release
+    if (type === 'partial_release') {
+        const input = document.getElementById('resolutionAmount');
+        if (input) input.value = '';
+        switchAmountMode('percent');
+    }
+}
+
+async function confirmResolve(disputeId, totalFund) {
+    const resolution = document.getElementById('resolutionType')?.value;
+    if (!resolution) { showToast('Jenis resolusi wajib dipilih', 'error'); return; }
+
+    let amount = 0;
+    if (resolution === 'partial_release') {
+        const raw = (document.getElementById('resolutionAmount')?.value || '').trim();
+        const mode = window._resolveMode || 'percent';
+        const num = Number(raw);
+
+        if (!raw || isNaN(num)) {
+            showToast('Jumlah wajib diisi', 'error');
+            showAmountError('Jumlah wajib diisi');
+            return;
+        }
+        if (num <= 0) {
+            showToast('Jumlah harus lebih dari 0', 'error');
+            showAmountError('Jumlah harus lebih dari 0');
+            return;
+        }
+
+        if (mode === 'percent') {
+            if (num >= 100) {
+                showToast('Persen harus antara 1-99 (pilih Full Release untuk 100%)', 'error');
+                showAmountError('Persen harus antara 1-99');
+                return;
+            }
+            amount = Math.floor(totalFund * num / 100);
+        } else {
+            if (num >= totalFund) {
+                showToast(`Jumlah melebihi total dana (Rp${totalFund.toLocaleString()})`, 'error');
+                showAmountError('Jumlah harus kurang dari total dana');
+                return;
+            }
+            amount = Math.floor(num);
+        }
+
+        if (amount <= 0) {
+            showToast('Jumlah terlalu kecil, minimal Rp1', 'error');
+            showAmountError('Jumlah terlalu kecil');
+            return;
+        }
+    } else if (resolution === 'refund' || resolution === 'full_release') {
+        amount = totalFund;
+    }
+
+    const deskripsi = document.getElementById('resolutionDesc')?.value || '';
+    const btn = document.getElementById('resolveSubmitBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Mengirim...'; }
+
     const res = await api(`/api/disputes/${disputeId}/resolve`, {
         method: 'POST',
         body: JSON.stringify({ resolution, amount, deskripsi })
     });
-    
+
     if (res.success) {
         showToast('Dispute di-resolve!', 'success');
         closeModal('resolveModal');
         showAdminTab('disputes');
     } else {
+        if (btn) { btn.disabled = false; btn.textContent = 'Konfirmasi Resolusi'; }
         showToast(res.error || 'Gagal resolve dispute', 'error');
+    }
+}
+
+function showAmountError(msg) {
+    const err = document.getElementById('resolveAmountError');
+    if (err) {
+        err.textContent = msg;
+        err.style.display = 'block';
     }
 }
 
@@ -2871,6 +3134,233 @@ function showPrompt(title, msg, onConfirm, defaultValue = '', mode = 'input') {
         if (mode === 'textarea') textarea.focus();
         else input.focus();
     }, 100);
+}
+
+// ===== REVIEWS / RATINGS =====
+// Cache of "orderId:productId" already rated by the current buyer. Empty string
+// means "no order yet" (rating without an order — not currently used in UI, but
+// kept for the backend contract). Loaded lazily on first buyer-dashboard render.
+let myReviewsCache = null;
+async function ensureMyReviews() {
+    if (myReviewsCache) return myReviewsCache;
+    if (!currentUser) return [];
+    const r = await api('/api/reviews/my');
+    myReviewsCache = Array.isArray(r) ? r : [];
+    return myReviewsCache;
+}
+function reviewKey(orderId, productId) { return (orderId || 0) + ':' + productId; }
+async function isAlreadyRated(orderId, productId) {
+    const mine = await ensureMyReviews();
+    return mine.some(r => r.id_product == productId && r.id_order == orderId);
+}
+function starsHtml(n, cls = '') {
+    n = Math.max(0, Math.min(5, parseInt(n) || 0));
+    let h = `<span class="stars ${cls}">`;
+    for (let i = 1; i <= 5; i++) {
+        h += `<i class="fas fa-star ${i <= n ? 'star-on' : ''}"></i>`;
+    }
+    return h + '</span>';
+}
+
+// --- Rating input modal ---
+let ratingCtx = { orderId: null, products: [], activeIdx: 0 };
+let ratingVal = 0;
+const RATING_LABELS = ['Pilih rating', 'Sangat Buruk', 'Buruk', 'Cukup', 'Bagus', 'Sangat Bagus'];
+
+// Open the rating popup for ONE order. It shows all not-yet-rated products
+// from that order so the buyer can rate each one. One button per order, not
+// one button per product.
+async function openRating(orderId) {
+    if (!currentUser) { showToast('Login terlebih dahulu', 'error'); return; }
+    // Load the order to get its item list.
+    const order = await api(`/api/orders/${orderId}`);
+    if (!order || order.error || !Array.isArray(order.items) || order.items.length === 0) {
+        showToast('Order tidak ditemukan', 'error');
+        return;
+    }
+    // Keep only the products that haven't been rated yet.
+    const myRvs = await ensureMyReviews();
+    const ratedKeys = new Set(myRvs.map(r => (r.id_order||0) + ':' + r.id_product));
+    const products = order.items.filter(i => !ratedKeys.has(orderId + ':' + i.id_product));
+    if (products.length === 0) {
+        showToast('Semua produk pada order ini sudah dirating', 'info');
+        return;
+    }
+    ratingCtx = { orderId, products, activeIdx: 0 };
+    document.getElementById('ratingModalTitle').innerHTML =
+        `<i class="fas fa-star" style="color:var(--yellow-500)"></i> Beri Rating <span class="rating-order-id">Order #${orderId}</span>`;
+    renderRatingProductList();
+    document.getElementById('ratingModal').style.display = 'flex';
+}
+
+// Render the list of products that need rating. Clicking one makes it "active"
+// so the stars below apply to it. The currently active product is highlighted.
+function renderRatingProductList() {
+    const el = document.getElementById('ratingModalProducts');
+    if (!el) return;
+    const products = ratingCtx.products;
+    if (products.length === 1) {
+        // Single product: render inline (no switcher needed).
+        el.innerHTML = renderRatingProductRow(products[0], 0, true);
+    } else {
+        el.innerHTML = `
+            <div class="rating-products-intro">
+                <i class="fas fa-info-circle"></i>
+                <span>Klik produk untuk memilihnya, lalu beri rating di bawah.</span>
+            </div>
+            <div class="rating-products-list">
+                ${products.map((p, i) => renderRatingProductRow(p, i, false)).join('')}
+            </div>`;
+    }
+}
+
+function renderRatingProductRow(p, idx, active) {
+    const name = p.nama_produk || 'Produk';
+    const qty = p.quantity || 1;
+    const satuan = p.satuan || 'pcs';
+    const img = p.foto || productImg(p.id_product);
+    return `<div class="rating-product-row ${active ? 'active' : ''}" data-idx="${idx}" onclick="selectRatingProduct(${idx})">
+        <img src="${escapeHtml(img)}" alt="${escapeHtml(name)}" onerror="this.style.display='none'">
+        <div class="rp-info">
+            <div class="rp-name">${escapeHtml(name)}</div>
+            <div class="rp-meta">×${qty} ${escapeHtml(satuan)}</div>
+        </div>
+    </div>`;
+}
+
+// Switch which product the stars apply to. Resets the star rating for the new product.
+function selectRatingProduct(idx) {
+    if (!ratingCtx.products || !ratingCtx.products[idx]) return;
+    ratingCtx.activeIdx = idx;
+    // Reset rating for the newly selected product (each product gets its own rating).
+    ratingVal = 0;
+    paintRatingStars(0);
+    document.getElementById('ratingLabel').textContent = RATING_LABELS[0];
+    document.getElementById('ratingComment').value = '';
+    document.getElementById('ratingCommentCount').textContent = '0';
+    // Re-render the list to update active highlight.
+    document.querySelectorAll('#ratingModalProducts .rating-product-row').forEach(row => {
+        row.classList.toggle('active', parseInt(row.dataset.idx) === idx);
+    });
+    // Show which product is currently selected.
+    const target = document.getElementById('ratingActiveTarget');
+    if (target) {
+        const p = ratingCtx.products[idx];
+        target.innerHTML = `<i class="fas fa-arrow-left"></i> Rating untuk: <strong>${escapeHtml(p.nama_produk||'Produk')}</strong>`;
+    }
+}
+
+function paintRatingStars(n) {
+    const stars = document.querySelectorAll('#ratingStars i');
+    stars.forEach((s, i) => s.classList.toggle('on', i < n));
+    document.getElementById('ratingLabel').textContent = RATING_LABELS[n] || RATING_LABELS[0];
+}
+
+function setRating(e) {
+    const t = e.target.closest('i[data-v]');
+    if (!t) return;
+    const v = parseInt(t.dataset.v) || 0;
+    if (v === ratingVal) return; // clicking same star = no-op
+    ratingVal = v;
+    paintRatingStars(v);
+}
+
+async function submitRating() {
+    if (!ratingCtx.products || ratingCtx.products.length === 0) return;
+    if (ratingVal < 1) {
+        showToast('Pilih rating dulu', 'error');
+        return;
+    }
+    const p = ratingCtx.products[ratingCtx.activeIdx];
+    if (!p) {
+        showToast('Produk tidak ditemukan', 'error');
+        return;
+    }
+    const btn = document.getElementById('ratingSubmitBtn');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'Mengirim...';
+
+    const res = await api('/api/reviews', {
+        method: 'POST',
+        body: JSON.stringify({
+            id_order: ratingCtx.orderId,
+            id_product: p.id_product,
+            rating: ratingVal,
+            komentar: document.getElementById('ratingComment').value,
+        }),
+    });
+
+    btn.disabled = false;
+    btn.textContent = 'Kirim Rating';
+
+    if (res && res.success) {
+        // Remove the just-rated product from the list.
+        const removedName = p.nama_produk || 'Produk';
+        ratingCtx.products.splice(ratingCtx.activeIdx, 1);
+        if (ratingCtx.products.length === 0) {
+            // All products done — close the modal.
+            closeModal('ratingModal');
+            myReviewsCache = null;
+            showToast(`Rating ${ratingVal}/5 untuk ${removedName} dikirim! Semua produk dirating 🌟`, 'success');
+        } else {
+            // Move to next unrated product (or stay at the beginning if we wrapped around).
+            ratingCtx.activeIdx = ratingCtx.activeIdx % ratingCtx.products.length;
+            // Re-render the product list and reset stars for the new product.
+            renderRatingProductList();
+            selectRatingProduct(ratingCtx.activeIdx);
+            showToast(`Rating ${ratingVal}/5 untuk ${removedName} terkirim. ${ratingCtx.products.length} produk lagi`, 'success');
+        }
+        // Refresh the buyer orders list (background — won't break the modal).
+        if (currentUser && currentUser.id_role === 3) {
+            const el = document.getElementById('dashboardContent');
+            if (el) loadBuyerOrders(el);
+        }
+    } else {
+        showToast((res && res.error) || 'Gagal mengirim rating', 'error');
+    }
+}
+
+// --- Review list (rendered inside product detail modal) ---
+async function loadProductReviews(productId, containerId) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    el.innerHTML = '<div class="review-empty"><i class="fas fa-spinner fa-spin"></i> Memuat ulasan...</div>';
+    const data = await api(`/api/reviews/product/${productId}`);
+    if (!data || data.error) {
+        el.innerHTML = '<div class="review-empty">Gagal memuat ulasan</div>';
+        return;
+    }
+    const { reviews, avg_rating, count } = data;
+    el.innerHTML = renderReviews(reviews || [], avg_rating, count);
+}
+
+function renderReviews(reviews, avg, count) {
+    const avgHtml = avg ? `${parseFloat(avg).toFixed(1)}` : '—';
+    const starHtml = starsHtml(avg, 'stars-readonly');
+    const head = `
+        <div class="review-head">
+            <div class="review-summary">
+                <span class="avg">${avgHtml}</span>
+                <div>
+                    ${starHtml}
+                    <div class="rating-count">${count} ulasan</div>
+                </div>
+            </div>
+        </div>`;
+    if (!reviews.length) {
+        return head + '<div class="review-empty">Belum ada ulasan. Jadilah yang pertama!</div>';
+    }
+    const list = reviews.map(r => `
+        <div class="review-card">
+            <div class="review-card-head">
+                <span class="review-buyer">${escapeHtml(r.buyer_nama || 'User')}</span>
+                <span class="review-date">${escapeHtml((r.created_at||'').slice(0,10))}</span>
+            </div>
+            <div class="review-stars">${starsHtml(r.rating, 'stars-readonly')}</div>
+            ${r.komentar ? `<div class="review-comment">${escapeHtml(r.komentar)}</div>` : ''}
+        </div>`).join('');
+    return head + `<div class="review-list">${list}</div>`;
 }
 
 document.addEventListener('DOMContentLoaded', () => {

@@ -63,6 +63,7 @@ Route::post('/payments/{order_id}/release', [PaymentController::class, 'release'
 
 // Disputes
 Route::get('/disputes', [DisputeController::class, 'index']);
+Route::get('/disputes/{id}', [DisputeController::class, 'detail']);
 Route::post('/disputes', [DisputeController::class, 'store']);
 Route::get('/disputes/{id}/messages', [DisputeController::class, 'getMessages']);
 Route::post('/disputes/{id}/messages', [DisputeController::class, 'send']);
@@ -71,6 +72,9 @@ Route::post('/disputes/{id}/resolve', [DisputeController::class, 'resolve']);
 
 // Reviews
 Route::get('/reviews', [ReviewController::class, 'index']);
+Route::get('/reviews/my', [ReviewController::class, 'mine']);
+Route::get('/reviews/product/{id}', [ReviewController::class, 'forProduct']);
+Route::get('/reviews/order/{id}', [ReviewController::class, 'forOrder']);
 Route::post('/reviews', [ReviewController::class, 'store']);
 
 // Messages
